@@ -26,13 +26,11 @@ use crate::{
         },
         module_batches::{BatchingConfig, ModuleBatchesGraphEdge},
     },
-    output::{OutputAsset, OutputAssetsReference},
-    traced_asset::TracedAsset,
+    output::OutputAssetsReference,
 };
 
 pub struct MakeChunkGroupResult {
     pub chunks: ResolvedVc<Chunks>,
-    pub referenced_output_assets: Vec<ResolvedVc<Box<dyn OutputAsset>>>,
     pub references: Vec<ResolvedVc<Box<dyn OutputAssetsReference>>>,
     pub availability_info: AvailabilityInfo,
 }
@@ -54,7 +52,6 @@ pub async fn make_chunk_group(
     let is_nested_async_availability_enabled = *chunking_context
         .is_nested_async_availability_enabled()
         .await?;
-    let should_trace = *chunking_context.is_tracing_enabled().await?;
     let should_merge_modules = *chunking_context.is_module_merging_enabled().await?;
     let batching_config = chunking_context.batching_config();
 
@@ -62,7 +59,6 @@ pub async fn make_chunk_group(
         chunkable_items,
         batch_groups,
         async_modules,
-        traced_modules,
         availability_info: new_availability_info,
     } = chunk_group_content(
         module_graph,
@@ -70,7 +66,6 @@ pub async fn make_chunk_group(
         ChunkGroupContentOptions {
             availability_info,
             can_split_async,
-            should_trace,
             should_merge_modules,
             batching_config,
         },
@@ -148,16 +143,6 @@ pub async fn make_chunk_group(
         .try_join()
         .await?;
 
-    let referenced_output_assets = traced_modules
-        .into_iter()
-        .map(|module| async move {
-            Ok(ResolvedVc::upcast(
-                TracedAsset::new(*module).to_resolved().await?,
-            ))
-        })
-        .try_join()
-        .await?;
-
     chunk_items.extend(async_loader_chunk_items);
 
     // Pass chunk items to chunking algorithm
@@ -173,7 +158,6 @@ pub async fn make_chunk_group(
 
     Ok(MakeChunkGroupResult {
         chunks,
-        referenced_output_assets,
         references: ResolvedVc::upcast_vec(async_loaders),
         availability_info: new_availability_info,
     })
@@ -184,8 +168,6 @@ pub struct ChunkGroupContentOptions {
     pub availability_info: AvailabilityInfo,
     /// Whether async modules can be split into separate chunks
     pub can_split_async: bool,
-    /// Whether traced modules should be collected
-    pub should_trace: bool,
     /// Whether module merging is enabled
     pub should_merge_modules: bool,
     /// The batching config to use
@@ -201,7 +183,6 @@ pub async fn chunk_group_content(
     ChunkGroupContentOptions {
         availability_info,
         can_split_async,
-        should_trace,
         should_merge_modules,
         batching_config,
     }: ChunkGroupContentOptions,
@@ -214,14 +195,12 @@ pub async fn chunk_group_content(
         unsorted_items: ModuleToChunkableMap,
         chunkable_items: FxIndexSet<ChunkableModuleOrBatch>,
         async_modules: FxIndexSet<ResolvedVc<Box<dyn ChunkableModule>>>,
-        traced_modules: FxIndexSet<ResolvedVc<Box<dyn Module>>>,
     }
 
     let mut state = TraverseState {
         unsorted_items: FxHashMap::default(),
         chunkable_items: FxIndexSet::default(),
         async_modules: FxIndexSet::default(),
-        traced_modules: FxIndexSet::default(),
     };
 
     let available_modules = match availability_info.available_modules() {
@@ -246,17 +225,11 @@ pub async fn chunk_group_content(
             if let Some((
                 _,
                 ModuleBatchesGraphEdge {
-                    ty: ChunkingType::Traced,
+                    ty: ChunkingType::Traced { .. },
                     ..
                 },
             )) = parent_info
             {
-                if should_trace {
-                    let ModuleOrBatch::Module(module) = node else {
-                        unreachable!();
-                    };
-                    state.traced_modules.insert(module);
-                }
                 return Ok(GraphTraversalAction::Exclude);
             }
 
@@ -322,7 +295,7 @@ pub async fn chunk_group_content(
                         GraphTraversalAction::Exclude
                     }
                 }
-                ChunkingType::Traced => {
+                ChunkingType::Traced { .. } => {
                     // handled above before the sidecast
                     unreachable!();
                 }
@@ -425,7 +398,6 @@ pub async fn chunk_group_content(
         chunkable_items,
         batch_groups,
         async_modules: state.async_modules,
-        traced_modules: state.traced_modules,
         availability_info,
     })
 }
