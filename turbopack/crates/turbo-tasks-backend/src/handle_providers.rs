@@ -174,9 +174,6 @@ provide_prod!(fn connect_task(task: turbo_tasks::TaskId));
 provide_prod!(fn spawn_detached_for_testing(
     f: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send + 'static>>,
 ));
-provide_prod!(fn subscribe_to_compilation_events(
-    event_types: ::core::option::Option<::std::vec::Vec<::std::string::String>>,
-) -> ::tokio::sync::mpsc::Receiver<::std::sync::Arc<dyn turbo_tasks::message_queue::CompilationEvent>>);
 provide_prod!(fn is_tracking_dependencies() -> bool);
 
 // `task_statistics` is special: the trait method returns

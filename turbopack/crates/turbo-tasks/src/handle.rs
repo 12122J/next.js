@@ -244,10 +244,6 @@ tt_decl!(fn spawn_detached_for_testing(
     f: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send + 'static>>,
 ));
 
-tt_decl!(fn subscribe_to_compilation_events(
-    event_types: ::core::option::Option<::std::vec::Vec<::std::string::String>>,
-) -> ::tokio::sync::mpsc::Receiver<::std::sync::Arc<dyn crate::message_queue::CompilationEvent>>);
-
 tt_decl!(fn is_tracking_dependencies() -> bool);
 
 // `task_statistics` returns `&TaskStatisticsApi` borrowed from `&self`.
