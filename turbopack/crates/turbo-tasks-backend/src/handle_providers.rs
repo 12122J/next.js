@@ -52,7 +52,7 @@ macro_rules! provide_prod {
 
 /// Same as `provide_prod!`, but forces UFCS dispatch to a specific
 /// trait. Used for methods (`run`, `run_once`, `run_once_with_reason`,
-/// `start_once_process`, `stop_and_wait`) where the concrete type has
+/// `stop_and_wait`) where the concrete type has
 /// an inherent method with the same name but a different return type —
 /// without UFCS, the inherent method wins and the macro fails type
 /// checking.
@@ -111,9 +111,6 @@ provide_prod_trait!(turbo_tasks::TurboTasksCallApi, fn run_once_with_reason(
     reason: turbo_tasks::util::StaticOrArc<dyn turbo_tasks::InvalidationReason>,
     future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
 ) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send>>);
-provide_prod_trait!(turbo_tasks::TurboTasksCallApi, fn start_once_process(
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send + 'static>>,
-));
 provide_prod_trait!(turbo_tasks::TurboTasksApi, fn stop_and_wait() -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send>>);
 
 // TurboTasksApi
