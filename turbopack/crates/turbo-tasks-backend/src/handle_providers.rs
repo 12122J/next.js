@@ -74,8 +74,7 @@ macro_rules! provide_prod_trait {
 
 // ---- dispatched methods ---------------------------------------------------
 //
-// Keep this list in sync with the matching `tt_decl_extern!` /
-// `tt_decl_handle_method!` invocations in
+// Keep this list in sync with the matching `tt_decl!` invocations in
 // `turbopack/crates/turbo-tasks/src/handle.rs`.
 
 // TurboTasksCallApi

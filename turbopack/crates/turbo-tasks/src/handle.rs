@@ -97,24 +97,16 @@ impl TurboTasksHandle {
 // resolved at link time. Thin LTO inlines them across the crate boundary.
 // =====================================================================
 
-/// Generates `unsafe extern "Rust" { fn __tt_static_<name>; }`
-/// declarations for one dispatched method.
-macro_rules! tt_decl_extern {
+/// For each dispatched method, generates both the `extern "Rust"` forward
+/// declaration of `__tt_static_<name>` and the matching inherent method on
+/// `TurboTasksHandle` that calls it.
+macro_rules! tt_decl {
     (
         fn $name:ident( $($arg:ident : $ty:ty),* $(,)? ) $(-> $ret:ty)?
     ) => {
         unsafe extern "Rust" {
             fn ${concat(__tt_static_, $name)}(ptr: *const () $(, $arg : $ty)*) $(-> $ret)?;
         }
-    };
-}
-
-/// Generates an inherent method on `TurboTasksHandle` that dispatches
-/// via the matching `__tt_static_<name>` extern.
-macro_rules! tt_decl_handle_method {
-    (
-        fn $name:ident( $($arg:ident : $ty:ty),* $(,)? ) $(-> $ret:ty)?
-    ) => {
         impl TurboTasksHandle {
             #[inline]
             pub fn $name(&self $(, $arg : $ty)*) $(-> $ret)? {
@@ -131,200 +123,111 @@ macro_rules! tt_decl_handle_method {
 // a missing provider surfaces as a link error.
 
 // `TurboTasksCallApi` methods.
-tt_decl_extern!(fn dynamic_call(
-    native_fn: &'static crate::native_function::NativeFunction,
-    this: Option<crate::RawVc>,
-    arg: &mut dyn crate::StackDynTaskInputs,
-    persistence: crate::TaskPersistence,
-) -> crate::RawVc);
-tt_decl_handle_method!(fn dynamic_call(
+tt_decl!(fn dynamic_call(
     native_fn: &'static crate::native_function::NativeFunction,
     this: Option<crate::RawVc>,
     arg: &mut dyn crate::StackDynTaskInputs,
     persistence: crate::TaskPersistence,
 ) -> crate::RawVc);
 
-tt_decl_extern!(fn native_call(
-    native_fn: &'static crate::native_function::NativeFunction,
-    this: Option<crate::RawVc>,
-    arg: &mut dyn crate::StackDynTaskInputs,
-    persistence: crate::TaskPersistence,
-) -> crate::RawVc);
-tt_decl_handle_method!(fn native_call(
+tt_decl!(fn native_call(
     native_fn: &'static crate::native_function::NativeFunction,
     this: Option<crate::RawVc>,
     arg: &mut dyn crate::StackDynTaskInputs,
     persistence: crate::TaskPersistence,
 ) -> crate::RawVc);
 
-tt_decl_extern!(fn trait_call(
-    trait_method: &'static crate::TraitMethod,
-    this: crate::RawVc,
-    arg: &mut dyn crate::StackDynTaskInputs,
-    persistence: crate::TaskPersistence,
-) -> crate::RawVc);
-tt_decl_handle_method!(fn trait_call(
+tt_decl!(fn trait_call(
     trait_method: &'static crate::TraitMethod,
     this: crate::RawVc,
     arg: &mut dyn crate::StackDynTaskInputs,
     persistence: crate::TaskPersistence,
 ) -> crate::RawVc);
 
-tt_decl_extern!(fn send_compilation_event(
-    event: ::std::sync::Arc<dyn crate::message_queue::CompilationEvent>,
-));
-tt_decl_handle_method!(fn send_compilation_event(
+tt_decl!(fn send_compilation_event(
     event: ::std::sync::Arc<dyn crate::message_queue::CompilationEvent>,
 ));
 
-tt_decl_extern!(fn get_task_name(task: crate::TaskId) -> ::std::string::String);
-tt_decl_handle_method!(fn get_task_name(task: crate::TaskId) -> ::std::string::String);
+tt_decl!(fn get_task_name(task: crate::TaskId) -> ::std::string::String);
 
-tt_decl_extern!(fn run(
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
-) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::core::result::Result<(), crate::backend::TurboTasksExecutionError>> + ::core::marker::Send>>);
-tt_decl_handle_method!(fn run(
+tt_decl!(fn run(
     future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
 ) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::core::result::Result<(), crate::backend::TurboTasksExecutionError>> + ::core::marker::Send>>);
 
-tt_decl_extern!(fn run_once(
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
-) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send>>);
-tt_decl_handle_method!(fn run_once(
+tt_decl!(fn run_once(
     future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
 ) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send>>);
 
-tt_decl_extern!(fn run_once_with_reason(
-    reason: crate::util::StaticOrArc<dyn crate::InvalidationReason>,
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
-) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send>>);
-tt_decl_handle_method!(fn run_once_with_reason(
+tt_decl!(fn run_once_with_reason(
     reason: crate::util::StaticOrArc<dyn crate::InvalidationReason>,
     future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
 ) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send>>);
 
-tt_decl_extern!(fn start_once_process(
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send + 'static>>,
-));
-tt_decl_handle_method!(fn start_once_process(
+tt_decl!(fn start_once_process(
     future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send + 'static>>,
 ));
 
-tt_decl_extern!(fn stop_and_wait()
-    -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send>>);
-tt_decl_handle_method!(fn stop_and_wait()
+tt_decl!(fn stop_and_wait()
     -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send>>);
 
 // `TurboTasksApi` methods (inherits TurboTasksCallApi above).
-tt_decl_extern!(fn invalidate(task: crate::TaskId));
-tt_decl_handle_method!(fn invalidate(task: crate::TaskId));
+tt_decl!(fn invalidate(task: crate::TaskId));
 
-tt_decl_extern!(fn invalidate_with_reason(
-    task: crate::TaskId,
-    reason: crate::util::StaticOrArc<dyn crate::InvalidationReason>,
-));
-tt_decl_handle_method!(fn invalidate_with_reason(
+tt_decl!(fn invalidate_with_reason(
     task: crate::TaskId,
     reason: crate::util::StaticOrArc<dyn crate::InvalidationReason>,
 ));
 
-tt_decl_extern!(fn invalidate_serialization(task: crate::TaskId));
-tt_decl_handle_method!(fn invalidate_serialization(task: crate::TaskId));
+tt_decl!(fn invalidate_serialization(task: crate::TaskId));
 
-tt_decl_extern!(fn try_read_task_output(
-    task: crate::TaskId,
-    options: crate::ReadOutputOptions,
-) -> ::anyhow::Result<::core::result::Result<crate::RawVc, crate::event::EventListener>>);
-tt_decl_handle_method!(fn try_read_task_output(
+tt_decl!(fn try_read_task_output(
     task: crate::TaskId,
     options: crate::ReadOutputOptions,
 ) -> ::anyhow::Result<::core::result::Result<crate::RawVc, crate::event::EventListener>>);
 
-tt_decl_extern!(fn try_read_task_cell(
-    task: crate::TaskId,
-    index: crate::CellId,
-    options: crate::ReadCellOptions,
-) -> ::anyhow::Result<::core::result::Result<crate::backend::TypedCellContent, crate::event::EventListener>>);
-tt_decl_handle_method!(fn try_read_task_cell(
+tt_decl!(fn try_read_task_cell(
     task: crate::TaskId,
     index: crate::CellId,
     options: crate::ReadCellOptions,
 ) -> ::anyhow::Result<::core::result::Result<crate::backend::TypedCellContent, crate::event::EventListener>>);
 
-tt_decl_extern!(fn try_read_local_output(
-    execution_id: crate::ExecutionId,
-    local_task_id: crate::LocalTaskId,
-) -> ::anyhow::Result<::core::result::Result<crate::RawVc, crate::event::EventListener>>);
-tt_decl_handle_method!(fn try_read_local_output(
+tt_decl!(fn try_read_local_output(
     execution_id: crate::ExecutionId,
     local_task_id: crate::LocalTaskId,
 ) -> ::anyhow::Result<::core::result::Result<crate::RawVc, crate::event::EventListener>>);
 
-tt_decl_extern!(fn read_task_collectibles(
-    task: crate::TaskId,
-    trait_id: crate::TraitTypeId,
-) -> crate::backend::TaskCollectiblesMap);
-tt_decl_handle_method!(fn read_task_collectibles(
+tt_decl!(fn read_task_collectibles(
     task: crate::TaskId,
     trait_id: crate::TraitTypeId,
 ) -> crate::backend::TaskCollectiblesMap);
 
-tt_decl_extern!(fn emit_collectible(
-    trait_type: crate::TraitTypeId,
-    collectible: crate::RawVc,
-));
-tt_decl_handle_method!(fn emit_collectible(
+tt_decl!(fn emit_collectible(
     trait_type: crate::TraitTypeId,
     collectible: crate::RawVc,
 ));
 
-tt_decl_extern!(fn unemit_collectible(
-    trait_type: crate::TraitTypeId,
-    collectible: crate::RawVc,
-    count: u32,
-));
-tt_decl_handle_method!(fn unemit_collectible(
+tt_decl!(fn unemit_collectible(
     trait_type: crate::TraitTypeId,
     collectible: crate::RawVc,
     count: u32,
 ));
 
-tt_decl_extern!(fn unemit_collectibles(
-    trait_type: crate::TraitTypeId,
-    collectibles: &crate::backend::TaskCollectiblesMap,
-));
-tt_decl_handle_method!(fn unemit_collectibles(
+tt_decl!(fn unemit_collectibles(
     trait_type: crate::TraitTypeId,
     collectibles: &crate::backend::TaskCollectiblesMap,
 ));
 
-tt_decl_extern!(fn try_read_own_task_cell(
-    current_task: crate::TaskId,
-    index: crate::CellId,
-) -> ::anyhow::Result<crate::backend::TypedCellContent>);
-tt_decl_handle_method!(fn try_read_own_task_cell(
+tt_decl!(fn try_read_own_task_cell(
     current_task: crate::TaskId,
     index: crate::CellId,
 ) -> ::anyhow::Result<crate::backend::TypedCellContent>);
 
-tt_decl_extern!(fn read_own_task_cell(
-    task: crate::TaskId,
-    index: crate::CellId,
-) -> ::anyhow::Result<crate::backend::TypedCellContent>);
-tt_decl_handle_method!(fn read_own_task_cell(
+tt_decl!(fn read_own_task_cell(
     task: crate::TaskId,
     index: crate::CellId,
 ) -> ::anyhow::Result<crate::backend::TypedCellContent>);
 
-tt_decl_extern!(fn update_own_task_cell(
-    task: crate::TaskId,
-    index: crate::CellId,
-    content: crate::backend::CellContent,
-    updated_key_hashes: ::core::option::Option<::smallvec::SmallVec<[u64; 2]>>,
-    content_hash: ::core::option::Option<crate::backend::CellHash>,
-    verification_mode: crate::backend::VerificationMode,
-));
-tt_decl_handle_method!(fn update_own_task_cell(
+tt_decl!(fn update_own_task_cell(
     task: crate::TaskId,
     index: crate::CellId,
     content: crate::backend::CellContent,
@@ -333,28 +236,19 @@ tt_decl_handle_method!(fn update_own_task_cell(
     verification_mode: crate::backend::VerificationMode,
 ));
 
-tt_decl_extern!(fn mark_own_task_as_finished(task: crate::TaskId));
-tt_decl_handle_method!(fn mark_own_task_as_finished(task: crate::TaskId));
+tt_decl!(fn mark_own_task_as_finished(task: crate::TaskId));
 
-tt_decl_extern!(fn connect_task(task: crate::TaskId));
-tt_decl_handle_method!(fn connect_task(task: crate::TaskId));
+tt_decl!(fn connect_task(task: crate::TaskId));
 
-tt_decl_extern!(fn spawn_detached_for_testing(
-    f: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send + 'static>>,
-));
-tt_decl_handle_method!(fn spawn_detached_for_testing(
+tt_decl!(fn spawn_detached_for_testing(
     f: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send + 'static>>,
 ));
 
-tt_decl_extern!(fn subscribe_to_compilation_events(
-    event_types: ::core::option::Option<::std::vec::Vec<::std::string::String>>,
-) -> ::tokio::sync::mpsc::Receiver<::std::sync::Arc<dyn crate::message_queue::CompilationEvent>>);
-tt_decl_handle_method!(fn subscribe_to_compilation_events(
+tt_decl!(fn subscribe_to_compilation_events(
     event_types: ::core::option::Option<::std::vec::Vec<::std::string::String>>,
 ) -> ::tokio::sync::mpsc::Receiver<::std::sync::Arc<dyn crate::message_queue::CompilationEvent>>);
 
-tt_decl_extern!(fn is_tracking_dependencies() -> bool);
-tt_decl_handle_method!(fn is_tracking_dependencies() -> bool);
+tt_decl!(fn is_tracking_dependencies() -> bool);
 
 // `task_statistics` returns `&TaskStatisticsApi` borrowed from `&self`.
 // The macro can't express the lifetime relationship through a `*const ()`
