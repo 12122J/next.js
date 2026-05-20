@@ -607,9 +607,7 @@ impl<B: Backend + 'static> TurboTasks<B> {
     }
 
     /// Builds a [`TurboTasksHandle`] for this `TurboTasks<B>` instance.
-    /// Helper that clones the internal `Arc<Self>` first; equivalent to
-    /// `self.pin().make_handle()`.
-    pub fn make_handle_from_ref(&self) -> crate::TurboTasksHandle {
+    fn make_handle_from_ref(&self) -> crate::TurboTasksHandle {
         self.pin().make_handle()
     }
 
