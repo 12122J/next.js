@@ -19,7 +19,7 @@ use tracing::info_span;
 use tracing::trace_span;
 use turbo_tasks::{
     CellId, DynTaskInputs, FxIndexMap, RawVc, SharedReference, TaskExecutionReason, TaskId,
-    TaskPriority, TurboTasksBackendApi, TurboTasksCallApi, backend::CachedTaskType,
+    TaskPriority, TurboTasks, TurboTasksCallApi, backend::CachedTaskType,
     macro_helpers::NativeFunction,
 };
 
@@ -167,7 +167,7 @@ impl TaskLockCounter {
 
 pub struct ExecuteContextImpl<'e, B: BackingStorage> {
     backend: &'e TurboTasksBackendInner<B>,
-    turbo_tasks: &'e dyn TurboTasksBackendApi<TurboTasksBackend<B>>,
+    turbo_tasks: &'e TurboTasks<TurboTasksBackend<B>>,
     _operation_guard: Option<OperationGuard<'e, AnyOperation>>,
     task_lock_counter: TaskLockCounter,
 }
@@ -175,7 +175,7 @@ pub struct ExecuteContextImpl<'e, B: BackingStorage> {
 impl<'e, B: BackingStorage> ExecuteContextImpl<'e, B> {
     pub(super) fn new(
         backend: &'e TurboTasksBackendInner<B>,
-        turbo_tasks: &'e dyn TurboTasksBackendApi<TurboTasksBackend<B>>,
+        turbo_tasks: &'e TurboTasks<TurboTasksBackend<B>>,
     ) -> Self {
         Self {
             backend,
@@ -1017,7 +1017,7 @@ impl<'e, B: BackingStorage> ExecuteContext<'e> for ExecuteContextImpl<'e, B> {
 
 struct ChildExecuteContextImpl<'e, B: BackingStorage> {
     backend: &'e TurboTasksBackendInner<B>,
-    turbo_tasks: &'e dyn TurboTasksBackendApi<TurboTasksBackend<B>>,
+    turbo_tasks: &'e TurboTasks<TurboTasksBackend<B>>,
 }
 
 impl<'e, B: BackingStorage> ChildExecuteContext<'e> for ChildExecuteContextImpl<'e, B> {
