@@ -50,28 +50,6 @@ macro_rules! provide_prod {
     };
 }
 
-/// Same as `provide_prod!`, but forces UFCS dispatch to a specific
-/// trait. Used for methods (`run`, `run_once`, `run_once_with_reason`,
-/// `stop_and_wait`) where the concrete type has
-/// an inherent method with the same name but a different return type —
-/// without UFCS, the inherent method wins and the macro fails type
-/// checking.
-macro_rules! provide_prod_trait {
-    (
-        $trait:path,
-        fn $name:ident( $($arg:ident : $ty:ty),* $(,)? ) $(-> $ret:ty)?
-    ) => {
-        #[unsafe(no_mangle)]
-        pub extern "Rust" fn ${concat(__tt_static_, $name)}(
-            ptr: *const ()
-            $(, $arg : $ty)*
-        ) $(-> $ret)? {
-            let tt: &ProdHandleConcrete = unsafe { &*(ptr as *const ProdHandleConcrete) };
-            <ProdHandleConcrete as $trait>::$name(tt $(, $arg)*)
-        }
-    };
-}
-
 // ---- dispatched methods ---------------------------------------------------
 //
 // Keep this list in sync with the matching `tt_decl!` invocations in
@@ -100,18 +78,6 @@ provide_prod!(fn send_compilation_event(
     event: ::std::sync::Arc<dyn turbo_tasks::message_queue::CompilationEvent>,
 ));
 provide_prod!(fn get_task_name(task: turbo_tasks::TaskId) -> ::std::string::String);
-
-provide_prod_trait!(turbo_tasks::TurboTasksCallApi, fn run(
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
-) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::core::result::Result<(), turbo_tasks::backend::TurboTasksExecutionError>> + ::core::marker::Send>>);
-provide_prod_trait!(turbo_tasks::TurboTasksCallApi, fn run_once(
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
-) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send>>);
-provide_prod_trait!(turbo_tasks::TurboTasksCallApi, fn run_once_with_reason(
-    reason: turbo_tasks::util::StaticOrArc<dyn turbo_tasks::InvalidationReason>,
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
-) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send>>);
-provide_prod_trait!(turbo_tasks::TurboTasksApi, fn stop_and_wait() -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send>>);
 
 // TurboTasksApi
 provide_prod!(fn invalidate(task: turbo_tasks::TaskId));

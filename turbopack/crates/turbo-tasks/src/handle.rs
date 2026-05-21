@@ -150,22 +150,6 @@ tt_decl!(fn send_compilation_event(
 
 tt_decl!(fn get_task_name(task: crate::TaskId) -> ::std::string::String);
 
-tt_decl!(fn run(
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
-) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::core::result::Result<(), crate::backend::TurboTasksExecutionError>> + ::core::marker::Send>>);
-
-tt_decl!(fn run_once(
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
-) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send>>);
-
-tt_decl!(fn run_once_with_reason(
-    reason: crate::util::StaticOrArc<dyn crate::InvalidationReason>,
-    future: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send + 'static>>,
-) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + ::core::marker::Send>>);
-
-tt_decl!(fn stop_and_wait()
-    -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ()> + ::core::marker::Send>>);
-
 // `TurboTasksApi` methods (inherits TurboTasksCallApi above).
 tt_decl!(fn invalidate(task: crate::TaskId));
 

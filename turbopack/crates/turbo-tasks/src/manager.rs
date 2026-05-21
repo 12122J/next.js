@@ -83,14 +83,6 @@ pub trait TurboTasksCallApi: Sync + Send {
         persistence: TaskPersistence,
     ) -> RawVc;
 
-    fn run(
-        &self,
-        future: Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), TurboTasksExecutionError>> + Send>>;
-    fn run_once(
-        &self,
-        future: Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
     fn run_once_with_reason(
         &self,
         reason: StaticOrArc<dyn InvalidationReason>,
@@ -184,8 +176,6 @@ pub trait TurboTasksApi: TurboTasksCallApi + Sync + Send {
     fn spawn_detached_for_testing(&self, f: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
 
     fn task_statistics(&self) -> &TaskStatisticsApi;
-
-    fn stop_and_wait(&self) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 
     fn subscribe_to_compilation_events(
         &self,
@@ -1340,24 +1330,6 @@ impl<B: Backend + 'static> TurboTasksCallApi for TurboTasks<B> {
     }
 
     #[track_caller]
-    fn run(
-        &self,
-        future: Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), TurboTasksExecutionError>> + Send>> {
-        let this = self.pin();
-        Box::pin(async move { this.run(future).await })
-    }
-
-    #[track_caller]
-    fn run_once(
-        &self,
-        future: Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-        let this = self.pin();
-        Box::pin(async move { this.run_once(future).await })
-    }
-
-    #[track_caller]
     fn run_once_with_reason(
         &self,
         reason: StaticOrArc<dyn InvalidationReason>,
@@ -1577,13 +1549,6 @@ impl<B: Backend + 'static> TurboTasksApi for TurboTasks<B> {
         self.backend.task_statistics()
     }
 
-    fn stop_and_wait(&self) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
-        let this = self.pin();
-        Box::pin(async move {
-            this.stop_and_wait().await;
-        })
-    }
-
     fn subscribe_to_compilation_events(
         &self,
         event_types: Option<Vec<String>>,
@@ -1665,61 +1630,6 @@ pub(crate) fn debug_assert_not_in_top_level_task(operation: &str) {
              reads to avoid leaking inconsistent return values."
         );
     }
-}
-
-pub async fn run<T: Send + 'static>(
-    tt: TurboTasksHandle,
-    future: impl Future<Output = Result<T>> + Send + 'static,
-) -> Result<T> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    tt.run(Box::pin(async move {
-        let result = future.await?;
-        tx.send(result)
-            .map_err(|_| anyhow!("unable to send result"))?;
-        Ok(())
-    }))
-    .await?;
-
-    Ok(rx.await?)
-}
-
-pub async fn run_once<T: Send + 'static>(
-    tt: TurboTasksHandle,
-    future: impl Future<Output = Result<T>> + Send + 'static,
-) -> Result<T> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    tt.run_once(Box::pin(async move {
-        let result = future.await?;
-        tx.send(result)
-            .map_err(|_| anyhow!("unable to send result"))?;
-        Ok(())
-    }))
-    .await?;
-
-    Ok(rx.await?)
-}
-
-pub async fn run_once_with_reason<T: Send + 'static>(
-    tt: TurboTasksHandle,
-    reason: impl InvalidationReason,
-    future: impl Future<Output = Result<T>> + Send + 'static,
-) -> Result<T> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    tt.run_once_with_reason(
-        (Arc::new(reason) as Arc<dyn InvalidationReason>).into(),
-        Box::pin(async move {
-            let result = future.await?;
-            tx.send(result)
-                .map_err(|_| anyhow!("unable to send result"))?;
-            Ok(())
-        }),
-    )
-    .await?;
-
-    Ok(rx.await?)
 }
 
 /// Calls [`TurboTasks::dynamic_call`] for the current turbo tasks instance.
