@@ -330,7 +330,7 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
             }
         };
         let counts = self.storage.evict_after_snapshot(None);
-        self.dump_transient_memory_audit_to_tmp();
+        self.dump_memory_audit_to_tmp();
         (had_new_data, counts)
     }
 
@@ -1692,24 +1692,66 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
         )
     }
 
-    /// Debug dump: enumerate every cell of every transient task, aggregate by
-    /// value type, and emit a ranked report plus a `DebugTraceTransientTask`
-    /// chain for the top offenders.
+    /// Debug dump: enumerate every cell of every task (transient and
+    /// persistent), aggregate by value type, and emit two ranked tables plus
+    /// sample dependency chains for the top offenders in each.
     ///
     /// Called synchronously at the end of each eviction cycle (see
-    /// [`Self::dump_transient_memory_audit_to_tmp`]). Used to track down memory
-    /// that survives `evict_after_snapshot` — typically transient tasks
-    /// holding `SharedReference`s whose Arcs transitively pin upstream cell
-    /// data.
-    fn dump_transient_memory_audit(
-        &self,
-        cycle: u64,
-        w: &mut dyn std::io::Write,
-    ) -> std::io::Result<()> {
+    /// [`Self::dump_memory_audit_to_tmp`]). Used to track down memory that
+    /// survives `evict_after_snapshot`:
+    /// - **Transient** section catches the per-route accumulation pattern (eviction skips these
+    ///   tasks entirely).
+    /// - **Persistent** section catches cells that *should* be evictable but aren't —
+    ///   `Evictability::Never` / `Expensive` cells, or tasks blocked from eviction by flags like
+    ///   `data_modified` or `data_restoring`.
+    fn dump_memory_audit(&self, cycle: u64, w: &mut dyn std::io::Write) -> std::io::Result<()> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        let raw = self.storage.audit_transient_cells();
+        let raw = self.storage.audit_all_cells();
+        let pid = std::process::id();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let (transient_cells, persistent_cells): (Vec<_>, Vec<_>) =
+            raw.cells.iter().partition(|e| e.task_id.is_transient());
 
+        writeln!(
+            w,
+            "=== Memory Audit (pid={pid}, cycle={cycle}, ts={ts}) ==="
+        )?;
+        writeln!(
+            w,
+            "transient: tasks={}  cells={}    persistent: tasks={}  cells={}",
+            raw.transient_task_count,
+            transient_cells.len(),
+            raw.persistent_task_count,
+            persistent_cells.len(),
+        )?;
+
+        writeln!(w, "\n--- TRANSIENT (eviction skips these) ---")?;
+        self.write_audit_section(w, &transient_cells, /* include_chain = */ true)?;
+
+        writeln!(
+            w,
+            "\n--- PERSISTENT (survived eviction: unevictable cells or unevictable tasks) ---"
+        )?;
+        self.write_audit_section(w, &persistent_cells, /* include_chain = */ false)?;
+        Ok(())
+    }
+
+    /// Render one ranked-by-strong-count section of the memory audit.
+    ///
+    /// If `include_chain` is true, emits a `DebugTraceTransientTask` Display
+    /// for the top-10 sample tasks — only meaningful for transient tasks.
+    /// For persistent samples we just emit `debug_get_task_description`,
+    /// which is enough to identify which task is holding the cell.
+    fn write_audit_section(
+        &self,
+        w: &mut dyn std::io::Write,
+        cells: &[&storage::AuditCellEntry],
+        include_chain: bool,
+    ) -> std::io::Result<()> {
         #[derive(Default)]
         struct TypeAggregate {
             cells: usize,
@@ -1720,7 +1762,7 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
         }
 
         let mut by_type: FxHashMap<ValueTypeId, TypeAggregate> = FxHashMap::default();
-        for e in &raw.cells {
+        for e in cells {
             let agg = by_type.entry(e.type_id).or_default();
             agg.cells += 1;
             agg.strong_count_sum += e.strong_count as u64;
@@ -1734,26 +1776,13 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
         let mut ranked: Vec<(ValueTypeId, TypeAggregate)> = by_type.into_iter().collect();
         ranked.sort_by_key(|b| Reverse(b.1.strong_count_sum));
 
-        let pid = std::process::id();
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
         let strong_sum_total: u64 = ranked.iter().map(|(_, a)| a.strong_count_sum).sum();
         writeln!(
             w,
-            "=== Transient Memory Audit (pid={pid}, cycle={cycle}, ts={ts}) ==="
-        )?;
-        writeln!(
-            w,
-            "transient_tasks={}  total_cells={}  distinct_value_types={}  \
-             total_strong_count_sum={}",
-            raw.transient_task_count,
-            raw.cells.len(),
+            "distinct_value_types={}  total_strong_count_sum={}",
             ranked.len(),
             strong_sum_total,
         )?;
-        writeln!(w)?;
         writeln!(
             w,
             "{:>4}  {:>14}  {:>10}  {:>8}  {:>8}  type_name",
@@ -1777,38 +1806,44 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
             let Some(sample) = agg.sample_task else {
                 continue;
             };
-            let Some(task_type) = self.debug_get_cached_task_type(sample) else {
+            let type_name = get_value_type(*type_id).ty.name;
+            if include_chain {
+                let Some(task_type) = self.debug_get_cached_task_type(sample) else {
+                    writeln!(
+                        w,
+                        "\n  Sample rank {} ({}, task {:?}): [no cached task type]",
+                        i + 1,
+                        type_name,
+                        sample,
+                    )?;
+                    continue;
+                };
+                let cell_id = CellId {
+                    type_id: *type_id,
+                    index: 0,
+                };
+                let trace = self.debug_trace_transient_task(&task_type, Some(cell_id));
                 writeln!(
                     w,
-                    "\n--- Sample chain rank {} ({}) ---\n[no cached task type for {:?}]",
+                    "\n  Sample chain rank {} ({}, sample task {:?}):\n{}",
                     i + 1,
-                    get_value_type(*type_id).ty.name,
+                    type_name,
                     sample,
+                    trace,
                 )?;
-                continue;
-            };
-            let cell_id = CellId {
-                type_id: *type_id,
-                index: 0,
-            };
-            let trace = self.debug_trace_transient_task(&task_type, Some(cell_id));
-            writeln!(
-                w,
-                "\n--- Sample chain rank {} ({}, sample task {:?}) ---\n{}",
-                i + 1,
-                get_value_type(*type_id).ty.name,
-                sample,
-                trace,
-            )?;
+            } else {
+                let desc = self.debug_get_task_description(sample);
+                writeln!(w, "  Sample rank {} ({}): {}", i + 1, type_name, desc,)?;
+            }
         }
         Ok(())
     }
 
-    /// Write a transient-memory audit report to
+    /// Write a memory audit report to
     /// `/tmp/turbo-tasks-audit-<pid>-<cycle>.txt`. Best-effort: errors are
     /// logged via `tracing::warn!` and otherwise swallowed — the audit must
     /// not break eviction.
-    fn dump_transient_memory_audit_to_tmp(&self) {
+    fn dump_memory_audit_to_tmp(&self) {
         use std::{
             fs::File,
             io::BufWriter,
@@ -1824,13 +1859,13 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
         let file = match File::create(&path) {
             Ok(f) => f,
             Err(e) => {
-                tracing::warn!(?path, error = %e, "failed to create transient memory audit file");
+                tracing::warn!(?path, error = %e, "failed to create memory audit file");
                 return;
             }
         };
         let mut w = BufWriter::new(file);
-        if let Err(e) = self.dump_transient_memory_audit(cycle, &mut w) {
-            tracing::warn!(?path, error = %e, "failed to write transient memory audit");
+        if let Err(e) = self.dump_memory_audit(cycle, &mut w) {
+            tracing::warn!(?path, error = %e, "failed to write memory audit");
         }
     }
 
@@ -3025,7 +3060,7 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
                                     evicted = true;
                                     ran_eviction = true;
                                     this.storage.evict_after_snapshot(background_span.id());
-                                    this.dump_transient_memory_audit_to_tmp();
+                                    this.dump_memory_audit_to_tmp();
                                 }
 
                                 // Compact while idle (up to limit), regardless of
