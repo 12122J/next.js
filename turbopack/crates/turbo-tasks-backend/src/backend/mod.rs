@@ -329,6 +329,7 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
             }
         };
         let counts = self.storage.evict_after_snapshot(None);
+        self.dump_transient_memory_audit_to_tmp();
         (had_new_data, counts)
     }
 
@@ -1690,6 +1691,148 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
         )
     }
 
+    /// Debug dump: enumerate every cell of every transient task, aggregate by
+    /// value type, and emit a ranked report plus a `DebugTraceTransientTask`
+    /// chain for the top offenders.
+    ///
+    /// Called synchronously at the end of each eviction cycle (see
+    /// [`Self::dump_transient_memory_audit_to_tmp`]). Used to track down memory
+    /// that survives `evict_after_snapshot` — typically transient tasks
+    /// holding `SharedReference`s whose Arcs transitively pin upstream cell
+    /// data.
+    fn dump_transient_memory_audit(
+        &self,
+        cycle: u64,
+        w: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let raw = self.storage.audit_transient_cells();
+
+        #[derive(Default)]
+        struct TypeAggregate {
+            cells: usize,
+            strong_count_sum: u64,
+            strong_count_max: usize,
+            distinct_tasks: FxHashSet<TaskId>,
+            sample_task: Option<TaskId>,
+        }
+
+        let mut by_type: FxHashMap<ValueTypeId, TypeAggregate> = FxHashMap::default();
+        for e in &raw.cells {
+            let agg = by_type.entry(e.type_id).or_default();
+            agg.cells += 1;
+            agg.strong_count_sum += e.strong_count as u64;
+            if e.strong_count > agg.strong_count_max {
+                agg.strong_count_max = e.strong_count;
+            }
+            agg.distinct_tasks.insert(e.task_id);
+            agg.sample_task.get_or_insert(e.task_id);
+        }
+
+        let mut ranked: Vec<(ValueTypeId, TypeAggregate)> = by_type.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.strong_count_sum.cmp(&a.1.strong_count_sum));
+
+        let pid = std::process::id();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let strong_sum_total: u64 = ranked.iter().map(|(_, a)| a.strong_count_sum).sum();
+        writeln!(
+            w,
+            "=== Transient Memory Audit (pid={pid}, cycle={cycle}, ts={ts}) ==="
+        )?;
+        writeln!(
+            w,
+            "transient_tasks={}  total_cells={}  distinct_value_types={}  \
+             total_strong_count_sum={}",
+            raw.transient_task_count,
+            raw.cells.len(),
+            ranked.len(),
+            strong_sum_total,
+        )?;
+        writeln!(w)?;
+        writeln!(
+            w,
+            "{:>4}  {:>14}  {:>10}  {:>8}  {:>8}  {}",
+            "rank", "strong_sum", "cells", "max_sc", "tasks", "type_name",
+        )?;
+        for (i, (type_id, agg)) in ranked.iter().take(50).enumerate() {
+            let name = get_value_type(*type_id).ty.name;
+            writeln!(
+                w,
+                "{:>4}  {:>14}  {:>10}  {:>8}  {:>8}  {}",
+                i + 1,
+                agg.strong_count_sum,
+                agg.cells,
+                agg.strong_count_max,
+                agg.distinct_tasks.len(),
+                name,
+            )?;
+        }
+
+        for (i, (type_id, agg)) in ranked.iter().take(10).enumerate() {
+            let Some(sample) = agg.sample_task else {
+                continue;
+            };
+            let Some(task_type) = self.debug_get_cached_task_type(sample) else {
+                writeln!(
+                    w,
+                    "\n--- Sample chain rank {} ({}) ---\n[no cached task type for {:?}]",
+                    i + 1,
+                    get_value_type(*type_id).ty.name,
+                    sample,
+                )?;
+                continue;
+            };
+            let cell_id = CellId {
+                type_id: *type_id,
+                index: 0,
+            };
+            let trace = self.debug_trace_transient_task(&task_type, Some(cell_id));
+            writeln!(
+                w,
+                "\n--- Sample chain rank {} ({}, sample task {:?}) ---\n{}",
+                i + 1,
+                get_value_type(*type_id).ty.name,
+                sample,
+                trace,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Write a transient-memory audit report to
+    /// `/tmp/turbo-tasks-audit-<pid>-<cycle>.txt`. Best-effort: errors are
+    /// logged via `tracing::warn!` and otherwise swallowed — the audit must
+    /// not break eviction.
+    fn dump_transient_memory_audit_to_tmp(&self) {
+        use std::{
+            fs::File,
+            io::BufWriter,
+            sync::atomic::{AtomicU64, Ordering},
+        };
+        static CYCLE: AtomicU64 = AtomicU64::new(0);
+        let cycle = CYCLE.fetch_add(1, Ordering::Relaxed);
+        let path = format!(
+            "/tmp/turbo-tasks-audit-{}-{:05}.txt",
+            std::process::id(),
+            cycle,
+        );
+        let file = match File::create(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(?path, error = %e, "failed to create transient memory audit file");
+                return;
+            }
+        };
+        let mut w = BufWriter::new(file);
+        if let Err(e) = self.dump_transient_memory_audit(cycle, &mut w) {
+            tracing::warn!(?path, error = %e, "failed to write transient memory audit");
+        }
+    }
+
     fn invalidate_task(
         &self,
         task_id: TaskId,
@@ -2881,6 +3024,7 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
                                     evicted = true;
                                     ran_eviction = true;
                                     this.storage.evict_after_snapshot(background_span.id());
+                                    this.dump_transient_memory_audit_to_tmp();
                                 }
 
                                 // Compact while idle (up to limit), regardless of
