@@ -193,8 +193,8 @@ import {
   type OpaqueFallbackRouteParams,
 } from '../request/fallback-params'
 import {
+  ReactServerPrerenderResult,
   createReactServerPrerenderResult,
-  type ReactServerPrerenderResult,
   ReactServerResult,
   ReplayableNodeStream,
   createReactServerPrerenderResultFromRender,
@@ -1935,16 +1935,20 @@ async function prospectiveRuntimeServerPrerender(
   }
 }
 
+function getIsPartialByte(isPartial: boolean) {
+  return isPartial ? 0x7e : 0x23
+}
+
 /**
  * Prepends a single ASCII byte to the stream indicating whether the response
  * is partial (contains dynamic holes): '~' (0x7e) for partial, '#' (0x23)
  * for complete.
  */
-function prependIsPartialByte(
+function prependIsPartialByteToStream(
   stream: ReadableStream<Uint8Array>,
   isPartial: boolean
 ): ReadableStream<Uint8Array> {
-  const byte = new Uint8Array([isPartial ? 0x7e : 0x23])
+  const byte = new Uint8Array([getIsPartialByte(isPartial)])
   return stream.pipeThrough(
     new TransformStream({
       start(controller) {
@@ -1952,6 +1956,13 @@ function prependIsPartialByte(
       },
     })
   )
+}
+
+function prependIsPartialByteToChunks(
+  chunks: Uint8Array[],
+  isPartial: boolean
+) {
+  return [new Uint8Array([getIsPartialByte(isPartial)]), ...chunks]
 }
 
 async function finalRuntimeServerPrerender(
@@ -2148,7 +2159,7 @@ async function finalRuntimeServerPrerender(
     }
   )
 
-  result.prelude = prependIsPartialByte(result.prelude, serverIsDynamic)
+  result.prelude = prependIsPartialByteToStream(result.prelude, serverIsDynamic)
 
   return {
     result,
@@ -5490,9 +5501,21 @@ async function renderWithRestartOnCacheMissInDevNode(
 }
 
 interface AccumulatedStreamChunks {
+  readonly shellStaticChunks: Array<Uint8Array>
   readonly staticChunks: Array<Uint8Array>
+  readonly shellRuntimeChunks: Array<Uint8Array>
   readonly runtimeChunks: Array<Uint8Array>
   readonly dynamicChunks: Array<Uint8Array>
+}
+
+function createChunksAccumulator(): AccumulatedStreamChunks {
+  return {
+    shellStaticChunks: [],
+    staticChunks: [],
+    shellRuntimeChunks: [],
+    runtimeChunks: [],
+    dynamicChunks: [],
+  }
 }
 
 async function accumulateStreamChunks(
@@ -5500,10 +5523,17 @@ async function accumulateStreamChunks(
   stageController: StagedRenderingController,
   signal: AbortSignal | null
 ): Promise<AccumulatedStreamChunks> {
-  const staticChunks: Array<Uint8Array> = []
-  const runtimeChunks: Array<Uint8Array> = []
-  const dynamicChunks: Array<Uint8Array> = []
+  const accumulator = createChunksAccumulator()
+  await accumulateStreamChunksInto(accumulator, stream, stageController, signal)
+  return accumulator
+}
 
+async function accumulateStreamChunksInto(
+  accumulator: AccumulatedStreamChunks,
+  stream: AnyStream,
+  stageController: StagedRenderingController,
+  signal: AbortSignal | null
+): Promise<void> {
   if (stream instanceof ReadableStream) {
     const reader = stream.getReader()
 
@@ -5526,13 +5556,7 @@ async function accumulateStreamChunks(
           cancel()
           break
         }
-        accumulateChunk(
-          stageController,
-          staticChunks,
-          runtimeChunks,
-          dynamicChunks,
-          value
-        )
+        accumulateChunk(stageController.currentStage, accumulator, value)
       }
     } catch (err) {
       // When we cancel the reader we may reject the read.
@@ -5559,13 +5583,7 @@ async function accumulateStreamChunks(
     try {
       for await (const value of nodeStream) {
         if (cancelled) break
-        accumulateChunk(
-          stageController,
-          staticChunks,
-          runtimeChunks,
-          dynamicChunks,
-          value
-        )
+        accumulateChunk(stageController.currentStage, accumulator, value)
       }
     } catch (err) {
       if (!cancelled) {
@@ -5573,39 +5591,39 @@ async function accumulateStreamChunks(
       }
     }
   }
-
-  return { staticChunks, runtimeChunks, dynamicChunks }
 }
 
 function accumulateChunk(
-  stageController: StagedRenderingController,
-  staticChunks: Array<Uint8Array>,
-  runtimeChunks: Array<Uint8Array>,
-  dynamicChunks: Array<Uint8Array>,
+  stage: RenderStage,
+  accumulator: AccumulatedStreamChunks,
   value: Uint8Array
 ): void {
-  switch (stageController.currentStage) {
+  switch (stage) {
     case RenderStage.Before:
       throw new InvariantError('Unexpected stream chunk while in Before stage')
-    case RenderStage.ShellEarlyStatic: // TODO(app-shells): separate the shell chunks
+    case RenderStage.ShellEarlyStatic:
     case RenderStage.ShellStatic:
+      accumulator.shellStaticChunks.push(value)
+    // fall through
     case RenderStage.EarlyStatic:
     case RenderStage.Static:
-      staticChunks.push(value)
+      accumulator.staticChunks.push(value)
     // fall through
-    case RenderStage.ShellEarlyRuntime: // TODO(app-shells): separate the shell chunks
+    case RenderStage.ShellEarlyRuntime:
     case RenderStage.ShellRuntime:
+      accumulator.shellRuntimeChunks.push(value)
+    // fall through
     case RenderStage.EarlyRuntime:
     case RenderStage.Runtime:
-      runtimeChunks.push(value)
+      accumulator.runtimeChunks.push(value)
     // fall through
     case RenderStage.Dynamic:
-      dynamicChunks.push(value)
+      accumulator.dynamicChunks.push(value)
       break
     case RenderStage.Abandoned:
       break
     default:
-      stageController.currentStage satisfies never
+      stage satisfies never
       break
   }
 }
@@ -7713,6 +7731,7 @@ async function prerenderToStream(
         // but we don't actually care about sync IO in this phase so we use a throw away controller
         // that isn't connected to anything
         controller: new AbortController(),
+        stagedRendering: null, // We don't need staging in the initial render
         // During the initial prerender we need to track all cache reads to ensure
         // we render long enough to fill every cache it is possible to visit during
         // the final prerender.
@@ -7748,6 +7767,7 @@ async function prerenderToStream(
         implicitTags,
         renderSignal: initialServerRenderController.signal,
         controller: initialServerPrerenderController,
+        stagedRendering: null, // We don't need staging in the initial render
         // During the initial prerender we need to track all cache reads to ensure
         // we render long enough to fill every cache it is possible to visit during
         // the final prerender.
@@ -7985,6 +8005,14 @@ async function prerenderToStream(
 
       const varyParamsAccumulator = createResponseVaryParamsAccumulator()
 
+      const finalStageController = new StagedRenderingController(
+        finalServerRenderController.signal,
+        null, // no abandoning
+        true, // track sync IO
+        true // has fallbacks
+      )
+      // finalStageController.debug = true // DEBUG
+
       const finalServerPayloadPrerenderStore: PrerenderStore = {
         type: 'prerender',
         phase: 'render',
@@ -7998,6 +8026,9 @@ async function prerenderToStream(
         // but we don't actually care about sync IO in this phase so we use a throw away controller
         // that isn't connected to anything
         controller: new AbortController(),
+        // NOTE: we're not using the stage controller for sync IO tracking,
+        // so this doesn't break the "throwaway abort controller" trick above.
+        stagedRendering: finalStageController,
         // All caches we could read must already be filled so no tracking is necessary
         cacheSignal: null,
         dynamicTracking: null,
@@ -8012,12 +8043,19 @@ async function prerenderToStream(
         varyParamsAccumulator,
       }
 
+      const shellByteLengthDeferred = createPromiseWithResolvers<
+        number | null
+      >()
+
       const finalAttemptRSCPayload = await workUnitAsyncStorage.run(
         finalServerPayloadPrerenderStore,
         getRSCPayload,
         tree,
         ctx,
-        { is404: res.statusCode === 404 }
+        {
+          is404: res.statusCode === 404,
+          shellByteLengthPromise: shellByteLengthDeferred.promise,
+        }
       )
 
       let staleTimeIterable: StaleTimeIterable | undefined
@@ -8029,7 +8067,7 @@ async function prerenderToStream(
       const serverDynamicTracking = createDynamicTrackingState(
         isDebugDynamicAccesses
       )
-      let serverIsDynamic = false
+      let staticIsPartial = false
 
       const finalServerPrerenderStore: PrerenderStore = (prerenderStore = {
         type: 'prerender',
@@ -8039,6 +8077,7 @@ async function prerenderToStream(
         implicitTags,
         renderSignal: finalServerRenderController.signal,
         controller: finalServerReactController,
+        stagedRendering: finalStageController,
         // All caches we could read must already be filled so no tracking is necessary
         cacheSignal: null,
         dynamicTracking: serverDynamicTracking,
@@ -8061,80 +8100,111 @@ async function prerenderToStream(
         )
       }
 
-      let prerenderIsPending = true
-      const finalRSCPrerenderOptions = {
-        filterStackFrame,
-        onError: (err: unknown) => {
-          return serverComponentsErrorHandler(err)
+      const accumulatedChunks = createChunksAccumulator()
+
+      let getPrerenderIsPending: () => boolean
+      let didLinkDataUnblockNewContent = false
+
+      await runInSequentialTasks(
+        async () => {
+          finalStageController.advanceStage(RenderStage.ShellStatic)
+
+          const prerenderResult = workUnitAsyncStorage.run(
+            finalServerPrerenderStore,
+            progressiveServerPrerenderWeb,
+            ComponentMod,
+            finalAttemptRSCPayload,
+            clientModules,
+            {
+              filterStackFrame,
+              onError: (err: unknown) => {
+                return serverComponentsErrorHandler(err)
+              },
+              signal: finalServerReactController.signal,
+            }
+          )
+
+          getPrerenderIsPending = prerenderResult.isPending
+
+          // The listener to abort our own render controller must be added
+          // after React has added its listener, to ensure that pending I/O
+          // is not aborted/rejected too early.
+          finalServerReactController.signal.addEventListener(
+            'abort',
+            () => {
+              finalServerRenderController.abort()
+            },
+            { once: true }
+          )
+
+          return accumulateStreamChunksInto(
+            accumulatedChunks,
+            prerenderResult.prelude,
+            finalStageController,
+            finalServerRenderController.signal
+          )
         },
-        signal: finalServerReactController.signal,
-      }
-      const finalRSCAbortCallback = async () => {
-        // Now that the prerendering is complete, we know the final stale
-        // time and vary params. Close the stale time iterable and resolve
-        // the vary params thenable so Flight can serialize their values
-        // into the stream. The timing here is important: both were
-        // included in the Flight payload, but they can only be serialized
-        // at the very end, after all the components have finished.
-        //
-        // We resolve these directly here instead of reading from the work
-        // unit store because this callback runs in a separate task (via
-        // setTimeout) and may not have access to the async storage context.
-        const pendingFinishes: Promise<void>[] = [
-          finishAccumulatingVaryParams(varyParamsAccumulator),
-        ]
-        if (staleTimeIterable !== undefined) {
-          pendingFinishes.push(finishStaleTimeTracking(staleTimeIterable))
+        () => {
+          finalStageController.advanceStage(RenderStage.Static)
+        },
+        async () => {
+          // If new chunks were emitted in the static stage
+          // (after unblocking link data, i.e. static params)
+          // then the prerender uses link data.
+          // NOTE: we must capture this *before* resolving staleTime/varyParams,
+          // which always emit new chunks.
+          didLinkDataUnblockNewContent =
+            accumulatedChunks.staticChunks.length >
+            accumulatedChunks.shellStaticChunks.length
+
+          // Now that the prerendering is complete, we know the final stale
+          // time and vary params. Close the stale time iterable and resolve
+          // the vary params thenable so Flight can serialize their values
+          // into the stream. The timing here is important: both were
+          // included in the Flight payload, but they can only be serialized
+          // at the very end, after all the components have finished.
+          finishAccumulatingVaryParams(varyParamsAccumulator)
+          if (staleTimeIterable !== undefined) {
+            finishStaleTimeTracking(staleTimeIterable)
+          }
+          shellByteLengthDeferred.resolve(
+            didLinkDataUnblockNewContent
+              ? accumulatedChunks.shellStaticChunks.reduce(
+                  (acc, chunk) => acc + chunk.byteLength,
+                  0
+                )
+              : null
+          )
+
+          // We're using a render, not a prerender, so React schedules rendering work in fast immediates,
+          // and we need to wait a fast immediate for the stale time/vary params chunks to flush.
+          await waitAtLeastOneReactRenderTask()
+
+          if (finalServerReactController.signal.aborted) {
+            // If the server controller is already aborted we must have called something
+            // that required aborting the prerender synchronously such as with new Date()
+            staticIsPartial = true
+            return
+          }
+
+          if (getPrerenderIsPending()) {
+            // If prerenderIsPending then we have blocked for longer than a Task and we assume
+            // there is something unfinished.
+            staticIsPartial = true
+          }
+
+          finalServerReactController.abort()
         }
-        await Promise.all(pendingFinishes)
+      )
 
-        if (finalServerReactController.signal.aborted) {
-          // If the server controller is already aborted we must have called something
-          // that required aborting the prerender synchronously such as with new Date()
-          serverIsDynamic = true
-          return
-        }
+      // If link data (static params) unblocked new content, then the shell has to be partial.
+      // If not, then the shell prerender and the static prerender are the same except for staleTime/varyParams.
+      const shellIsPartial = didLinkDataUnblockNewContent
+        ? true
+        : staticIsPartial
 
-        if (prerenderIsPending) {
-          // If prerenderIsPending then we have blocked for longer than a Task and we assume
-          // there is something unfinished.
-          serverIsDynamic = true
-        }
-
-        finalServerReactController.abort()
-      }
-      const finalRSCPrerenderFn = async () => {
-        const pendingPrerenderResult = workUnitAsyncStorage.run(
-          // The store to scope
-          finalServerPrerenderStore,
-          // The function to run
-          getServerPrerender(ComponentMod),
-          // ... the arguments for the function to run
-          finalAttemptRSCPayload,
-          clientModules,
-          finalRSCPrerenderOptions
-        )
-
-        // The listener to abort our own render controller must be added
-        // after React has added its listener, to ensure that pending I/O
-        // is not aborted/rejected too early.
-        finalServerReactController.signal.addEventListener(
-          'abort',
-          () => {
-            finalServerRenderController.abort()
-          },
-          { once: true }
-        )
-
-        const prerenderResult = await pendingPrerenderResult
-        prerenderIsPending = false
-
-        return prerenderResult
-      }
       const reactServerResult = (reactServerPrerenderResult =
-        await createReactServerPrerenderResult(
-          runInSequentialTasks(finalRSCPrerenderFn, finalRSCAbortCallback)
-        ))
+        new ReactServerPrerenderResult(accumulatedChunks.staticChunks))
 
       const clientDynamicTracking = createDynamicTrackingState(
         isDebugDynamicAccesses
@@ -8252,10 +8322,13 @@ async function prerenderToStream(
         tracingMetadata: tracingMetadata,
       })
 
-      metadata.flightData = await streamToBuffer(
+      metadata.flightData = Buffer.concat(
         cachedNavigations
-          ? prependIsPartialByte(reactServerResult.asStream(), serverIsDynamic)
-          : reactServerResult.asStream()
+          ? prependIsPartialByteToChunks(
+              reactServerResult.asChunks(),
+              staticIsPartial
+            )
+          : reactServerResult.asChunks()
       )
 
       // collectSegmentData needs the raw flight data without the marker byte.
@@ -8271,8 +8344,20 @@ async function prerenderToStream(
         ctx.pagePath,
         metadata
       )
+      if (cachedNavigations) {
+        metadata.segmentData ??= new Map()
+        metadata.segmentData.set(
+          '/_shell',
+          Buffer.concat(
+            prependIsPartialByteToChunks(
+              accumulatedChunks.shellStaticChunks,
+              shellIsPartial
+            )
+          )
+        )
+      }
 
-      if (serverIsDynamic) {
+      if (staticIsPartial) {
         // Dynamic case
         // We will always need to perform a "resume" render of some kind when this route is accessed
         // because the RSC data itself is dynamic. We determine if there are any HTML holes or not
