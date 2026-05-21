@@ -799,11 +799,11 @@ jobs:
 
     uses: ./.github/workflows/build_reusable.yml
     with:
-      # Should this be using turbopack? a variation?
       afterBuild: |
         export NEXT_TEST_MODE=dev
-        export IS_WEBPACK_TEST=1
         export __NEXT_EXPERIMENTAL_STRICT_ROUTE_TYPES=true
+        export IS_TURBOPACK_TEST=1
+        export TURBOPACK_DEV=1
 
         node run-tests.js \
           test/e2e/app-dir/app/index.test.ts \
@@ -825,8 +825,9 @@ jobs:
       nodeVersion: 20.9.0
       afterBuild: |
         export NEXT_TEST_MODE=start
-        export IS_WEBPACK_TEST=1
         export __NEXT_EXPERIMENTAL_STRICT_ROUTE_TYPES=true
+        export IS_TURBOPACK_TEST=1
+
         node run-tests.js --type production \
           --concurrency 4 \
           test/production/pages-dir/production/test/index.test.ts \
@@ -848,8 +849,9 @@ jobs:
     with:
       afterBuild: |
         export NEXT_TEST_MODE=start
-        export IS_WEBPACK_TEST=1
         export __NEXT_EXPERIMENTAL_STRICT_ROUTE_TYPES=true
+        export IS_TURBOPACK_TEST=1
+        export TURBOPACK_BUILD=1
 
         node run-tests.js --type production \
           test/e2e/app-dir/app/index.test.ts \
@@ -953,7 +955,8 @@ jobs:
         export __NEXT_EXPERIMENTAL_APP_NEW_SCROLL_HANDLER=true
         export NEXT_EXTERNAL_TESTS_FILTERS="test/cache-components-tests-manifest.json"
         export NEXT_TEST_MODE=dev
-        export IS_WEBPACK_TEST=1
+        export IS_TURBOPACK_TEST=1
+        export TURBOPACK_DEV=1
 
         node run-tests.js \
           --timings \
@@ -988,7 +991,8 @@ jobs:
         export __NEXT_EXPERIMENTAL_APP_NEW_SCROLL_HANDLER=true
         export NEXT_EXTERNAL_TESTS_FILTERS="test/cache-components-tests-manifest.json"
         export NEXT_TEST_MODE=start
-        export IS_WEBPACK_TEST=1
+        export IS_TURBOPACK_TEST=1
+        export TURBOPACK_BUILD=1
 
         node run-tests.js \
           --timings \
@@ -1024,7 +1028,8 @@ jobs:
         export __NEXT_EXPERIMENTAL_APP_NEW_SCROLL_HANDLER=true
         export NEXT_EXTERNAL_TESTS_FILTERS="test/cache-components-tests-manifest.json"
         export NEXT_TEST_MODE=dev
-        export IS_WEBPACK_TEST=1
+        export IS_TURBOPACK_TEST=1
+        export TURBOPACK_DEV=1
 
         node run-tests.js \
           --timings \
@@ -1060,7 +1065,8 @@ jobs:
         export __NEXT_EXPERIMENTAL_APP_NEW_SCROLL_HANDLER=true
         export NEXT_EXTERNAL_TESTS_FILTERS="test/cache-components-tests-manifest.json"
         export NEXT_TEST_MODE=start
-        export IS_WEBPACK_TEST=1
+        export IS_TURBOPACK_TEST=1
+        export TURBOPACK_BUILD=1
 
         node run-tests.js \
           --timings \
