@@ -7,6 +7,7 @@ pub mod storage_schema;
 
 use std::{
     borrow::Cow,
+    cmp::Reverse,
     fmt::{self, Write},
     future::Future,
     hash::BuildHasherDefault,
@@ -1731,7 +1732,7 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
         }
 
         let mut ranked: Vec<(ValueTypeId, TypeAggregate)> = by_type.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.strong_count_sum.cmp(&a.1.strong_count_sum));
+        ranked.sort_by_key(|b| Reverse(b.1.strong_count_sum));
 
         let pid = std::process::id();
         let ts = SystemTime::now()
@@ -1755,8 +1756,8 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
         writeln!(w)?;
         writeln!(
             w,
-            "{:>4}  {:>14}  {:>10}  {:>8}  {:>8}  {}",
-            "rank", "strong_sum", "cells", "max_sc", "tasks", "type_name",
+            "{:>4}  {:>14}  {:>10}  {:>8}  {:>8}  type_name",
+            "rank", "strong_sum", "cells", "max_sc", "tasks",
         )?;
         for (i, (type_id, agg)) in ranked.iter().take(50).enumerate() {
             let name = get_value_type(*type_id).ty.name;
