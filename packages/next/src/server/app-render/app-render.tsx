@@ -1986,16 +1986,18 @@ async function finalRuntimeServerPrerender(
     getPayload
   )
 
-  let prerenderIsPending = true
+  let getPrerenderIsPending: () => boolean
+
   const result = await runInSequentialTasks(
     async () => {
       // EarlyStatic stage: render begins.
       // Runtime-prefetchable segments render immediately.
       // Non-prefetchable segments are gated until the Static stage.
       finalStageController.advanceStage(RenderStage.EarlyStatic)
-      const prerenderResult = await workUnitAsyncStorage.run(
+      const prerenderResult = workUnitAsyncStorage.run(
         finalServerPrerenderStore,
-        getServerPrerender(ComponentMod),
+        streamingServerPrerenderWeb,
+        ComponentMod,
         finalRSCPayload,
         clientModules,
         {
@@ -2004,7 +2006,7 @@ async function finalRuntimeServerPrerender(
           signal: finalServerController.signal,
         }
       )
-      prerenderIsPending = false
+      getPrerenderIsPending = prerenderResult.isPending
       return prerenderResult
     },
     () => {
@@ -2022,29 +2024,28 @@ async function finalRuntimeServerPrerender(
       // non-prefetchable segments. Sync IO is allowed here.
       finalStageController.advanceStage(RenderStage.Runtime)
     },
-    () => {
-      Promise.all([
+    async () => {
+      await Promise.all([
         finishStaleTimeTracking(staleTimeIterable),
         finishAccumulatingVaryParams(varyParamsAccumulator),
-      ]).then(() => {
-        // Abort. This runs as a microtask after Flight has flushed the
-        // staleTime and varyParams closing chunks, but before the next
-        // macrotask resolves the overall result.
-        if (finalServerController.signal.aborted) {
-          // If the server controller is already aborted we must have called
-          // something that required aborting the prerender synchronously such
-          // as with new Date()
-          serverIsDynamic = true
-          return
-        }
+      ])
+      // We're using a render, not a prerender, so React schedules rendering work in fast immediates,
+      // and we need to wait a fast immediate for the stale time/vary params chunks to flush.
+      await waitAtLeastOneReactRenderTask()
 
-        if (prerenderIsPending) {
-          // If prerenderIsPending then we have blocked for longer than a Task
-          // and we assume there is something unfinished.
-          serverIsDynamic = true
-        }
-        finalServerController.abort()
-      })
+      if (finalServerController.signal.aborted) {
+        // If the server controller is already aborted we must have called
+        // something that required aborting the prerender synchronously such
+        // as with new Date()
+        serverIsDynamic = true
+        return
+      }
+
+      if (getPrerenderIsPending()) {
+        // If the prerender is still pending then it must depend on dynamic data.
+        serverIsDynamic = true
+      }
+      finalServerController.abort()
     }
   )
 
@@ -2061,6 +2062,106 @@ async function finalRuntimeServerPrerender(
     collectedStale: staleTimeIterable.currentValue,
     collectedTags: finalServerPrerenderStore.tags,
   }
+}
+
+type ServerPrerenderParams = Parameters<
+  (typeof import('react-server-dom-webpack/static'))['prerender']
+>
+function streamingServerPrerenderWeb(
+  componentMod: RenderOpts['ComponentMod'],
+  model: ServerPrerenderParams[0],
+  clientModules: ServerPrerenderParams[1],
+  options: Omit<NonNullable<ServerPrerenderParams[2]>, 'signal'> &
+    Required<Pick<NonNullable<ServerPrerenderParams[2]>, 'signal'>>
+) {
+  // React Prerenders and renders schedule work with different timings.
+  // Prerenders use `queueMicrotask`, but renders use `setImmediate`,
+  // so if we want to perform a staged prerender using a render function,
+  // fast-set-immediate is required for correctness.
+  const { expectFastSetImmediate } =
+    require('../node-environment-extensions/fast-set-immediate.external') as typeof import('../node-environment-extensions/fast-set-immediate.external')
+  expectFastSetImmediate('progressiveServerPrerenderWeb')
+
+  const { signal } = options
+
+  // When we abort the render, we want to finish the stream before react errors unfinished chunks.
+  let onBeforeReactAbort: ((reason: unknown) => void) | undefined
+  signal.addEventListener(
+    'abort',
+    () => {
+      onBeforeReactAbort?.(signal.reason)
+    },
+    { once: true }
+  )
+
+  const fullStream = componentMod.renderToReadableStream(
+    model,
+    clientModules,
+    options
+  )
+
+  // If the signal is already aborted, we won't render anything anyway.
+  if (signal.aborted) {
+    return { isPending: () => false, prelude: fullStream }
+  }
+
+  const fullStreamReader = fullStream.getReader()
+
+  let isPending = true
+  const resultStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      onBeforeReactAbort = (reason: unknown) => {
+        // if the stream already finished, do nothing.
+        if (!isPending) {
+          return
+        }
+        isPending = false
+        controller.close()
+        void fullStreamReader.cancel(reason)
+      }
+    },
+    async pull(controller) {
+      // `pull()` won't be called again until the first call resolves,
+      // so in effect it'll only be called once.
+      // we use a loop (instead of relying on `pull` being called repeatedly)
+      // so that we can get the chunks as soon as they're available.
+      // otherwise, the timing ends up being incorrect.
+      while (true) {
+        try {
+          const it = await fullStreamReader.read()
+
+          // If we've already aborted the render, do nothing.
+          // `onBeforeReactAbort` should've handled cleanup already.
+          // NOTE: cancelling the reader still seems to emit a `{done: true}` chunk.
+          // also, despite having cancelled the reader, we may still get error chunks from react,
+          // which we specifically want to ignore.
+          if (signal.aborted) {
+            return
+          }
+
+          // If we've finished the stream without aborting, then the prerender was completed.
+          if (it.done) {
+            isPending = false
+            controller.close()
+            return
+          }
+
+          controller.enqueue(it.value)
+        } catch (err) {
+          // Ignore errors that happen after aborting.
+          if (!signal.aborted) {
+            isPending = false
+            controller.error(err)
+          }
+        }
+      }
+    },
+    cancel(reason) {
+      isPending = false
+      return fullStreamReader.cancel(reason)
+    },
+  })
+  return { isPending: () => isPending, prelude: resultStream }
 }
 
 /**
@@ -7749,79 +7850,76 @@ async function prerenderToStream(
         )
       }
 
-      let prerenderIsPending = true
-      const finalRSCPrerenderOptions = {
-        filterStackFrame,
-        onError: (err: unknown) => {
-          return serverComponentsErrorHandler(err)
+      let getPrerenderIsPending: () => boolean
+
+      const finalServerPrerenderStreamPromise = runInSequentialTasks(
+        () => {
+          const prerenderResult = workUnitAsyncStorage.run(
+            finalServerPrerenderStore,
+            streamingServerPrerenderWeb,
+            ComponentMod,
+            finalAttemptRSCPayload,
+            clientModules,
+            {
+              filterStackFrame,
+              onError: (err: unknown) => {
+                return serverComponentsErrorHandler(err)
+              },
+              signal: finalServerReactController.signal,
+            }
+          )
+
+          getPrerenderIsPending = prerenderResult.isPending
+
+          // The listener to abort our own render controller must be added
+          // after React has added its listener, to ensure that pending I/O
+          // is not aborted/rejected too early.
+          finalServerReactController.signal.addEventListener(
+            'abort',
+            () => {
+              finalServerRenderController.abort()
+            },
+            { once: true }
+          )
+
+          return prerenderResult.prelude
         },
-        signal: finalServerReactController.signal,
-      }
-      const finalRSCAbortCallback = async () => {
-        // Now that the prerendering is complete, we know the final stale
-        // time and vary params. Close the stale time iterable and resolve
-        // the vary params thenable so Flight can serialize their values
-        // into the stream. The timing here is important: both were
-        // included in the Flight payload, but they can only be serialized
-        // at the very end, after all the components have finished.
-        //
-        // We resolve these directly here instead of reading from the work
-        // unit store because this callback runs in a separate task (via
-        // setTimeout) and may not have access to the async storage context.
-        const pendingFinishes: Promise<void>[] = [
-          finishAccumulatingVaryParams(varyParamsAccumulator),
-        ]
-        if (staleTimeIterable !== undefined) {
-          pendingFinishes.push(finishStaleTimeTracking(staleTimeIterable))
+        async () => {
+          // Now that the prerendering is complete, we know the final stale
+          // time and vary params. Close the stale time iterable and resolve
+          // the vary params thenable so Flight can serialize their values
+          // into the stream. The timing here is important: both were
+          // included in the Flight payload, but they can only be serialized
+          // at the very end, after all the components have finished.
+          finishAccumulatingVaryParams(varyParamsAccumulator)
+          if (staleTimeIterable !== undefined) {
+            finishStaleTimeTracking(staleTimeIterable)
+          }
+
+          // We're using a render, not a prerender, so React schedules rendering work in fast immediates,
+          // and we need to wait a fast immediate for the stale time/vary params chunks to flush.
+          await waitAtLeastOneReactRenderTask()
+
+          if (finalServerReactController.signal.aborted) {
+            // If the server controller is already aborted we must have called something
+            // that required aborting the prerender synchronously such as with new Date()
+            serverIsDynamic = true
+            return
+          }
+
+          if (getPrerenderIsPending()) {
+            // If prerenderIsPending then we have blocked for longer than a Task and we assume
+            // there is something unfinished.
+            serverIsDynamic = true
+          }
+
+          finalServerReactController.abort()
         }
-        await Promise.all(pendingFinishes)
+      )
 
-        if (finalServerReactController.signal.aborted) {
-          // If the server controller is already aborted we must have called something
-          // that required aborting the prerender synchronously such as with new Date()
-          serverIsDynamic = true
-          return
-        }
-
-        if (prerenderIsPending) {
-          // If prerenderIsPending then we have blocked for longer than a Task and we assume
-          // there is something unfinished.
-          serverIsDynamic = true
-        }
-
-        finalServerReactController.abort()
-      }
-      const finalRSCPrerenderFn = async () => {
-        const pendingPrerenderResult = workUnitAsyncStorage.run(
-          // The store to scope
-          finalServerPrerenderStore,
-          // The function to run
-          getServerPrerender(ComponentMod),
-          // ... the arguments for the function to run
-          finalAttemptRSCPayload,
-          clientModules,
-          finalRSCPrerenderOptions
-        )
-
-        // The listener to abort our own render controller must be added
-        // after React has added its listener, to ensure that pending I/O
-        // is not aborted/rejected too early.
-        finalServerReactController.signal.addEventListener(
-          'abort',
-          () => {
-            finalServerRenderController.abort()
-          },
-          { once: true }
-        )
-
-        const prerenderResult = await pendingPrerenderResult
-        prerenderIsPending = false
-
-        return prerenderResult
-      }
       const reactServerResult = (reactServerPrerenderResult =
-        await createReactServerPrerenderResult(
-          runInSequentialTasks(finalRSCPrerenderFn, finalRSCAbortCallback)
+        await createReactServerPrerenderResultFromRender(
+          await finalServerPrerenderStreamPromise
         ))
 
       const clientDynamicTracking = createDynamicTrackingState(
