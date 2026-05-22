@@ -9,7 +9,8 @@ use next_core::{
     get_edge_resolve_options_context, get_next_package,
     next_app::{
         AppEntry, AppPage, get_app_client_references_chunks, get_app_client_shared_chunk_group,
-        get_app_page_entry, get_app_route_entry, metadata::route::get_app_metadata_route_entry,
+        get_app_page_entry, get_app_route_entry, get_recursive_client_references_chunks_for_hmr,
+        metadata::route::get_app_metadata_route_entry,
     },
     next_client::{
         ClientContextType, get_client_module_options_context, get_client_resolve_options_context,
@@ -1278,28 +1279,6 @@ impl AppEndpoint {
             None
         };
 
-        // We only need the client runtime entries for pages not for Route Handlers
-        let (availability_info, client_shared_chunks) = if is_app_page {
-            let client_shared_chunk_group = get_app_client_shared_chunk_group(
-                AssetIdent::from_path(project.project_path().owned().await?)
-                    .with_modifier(rcstr!("client-shared-chunks"))
-                    .into_vc(),
-                this.app_project.client_runtime_entries(),
-                *module_graphs.full,
-                *client_chunking_context,
-            );
-
-            client_assets.extend(client_shared_chunk_group.all_assets().await?);
-
-            let client_shared_chunk_group = client_shared_chunk_group.await?;
-            (
-                client_shared_chunk_group.availability_info,
-                client_shared_chunk_group.assets.owned().await?,
-            )
-        } else {
-            (AvailabilityInfo::root(), vec![])
-        };
-
         let per_page_module_graph = *project.per_page_module_graph().await?;
 
         let next_dynamic_imports =
@@ -1320,6 +1299,33 @@ impl AppEndpoint {
                 .to_resolved()
                 .await?;
 
+        // availability_info must be computed before client_references_chunks.
+        // Use a plain chunk_group call (make_chunk_group is memoized, so the
+        // evaluated_chunk_group call in get_app_client_shared_chunk_group reuses it).
+        let client_shared_chunks_ident =
+            AssetIdent::from_path(project.project_path().owned().await?)
+                .with_modifier(rcstr!("client-shared-chunks"))
+                .into_vc();
+        let availability_info = if is_app_page {
+            let client_runtime_entries = this.app_project.client_runtime_entries().await?;
+            client_chunking_context
+                .chunk_group(
+                    client_shared_chunks_ident,
+                    ChunkGroup::Entry(
+                        client_runtime_entries
+                            .iter()
+                            .map(|v| ResolvedVc::upcast(*v))
+                            .collect(),
+                    ),
+                    *module_graphs.full,
+                    AvailabilityInfo::root(),
+                )
+                .await?
+                .availability_info
+        } else {
+            AvailabilityInfo::root()
+        };
+
         let client_references_chunks = get_app_client_references_chunks(
             *client_references,
             *module_graphs.full,
@@ -1330,6 +1336,30 @@ impl AppEndpoint {
         .to_resolved()
         .await?;
         let client_references_chunks_ref = client_references_chunks.await?;
+
+        // We only need the client runtime entries for pages not for Route Handlers
+        let client_shared_chunks = if is_app_page {
+            let chunk_list_extra_chunks = if is_production {
+                OutputAssets::empty()
+            } else {
+                get_recursive_client_references_chunks_for_hmr(*client_references_chunks)
+            };
+
+            let client_shared_chunk_group = get_app_client_shared_chunk_group(
+                client_shared_chunks_ident,
+                this.app_project.client_runtime_entries(),
+                *module_graphs.full,
+                *client_chunking_context,
+                chunk_list_extra_chunks,
+            );
+
+            client_assets.extend(client_shared_chunk_group.all_assets().await?);
+
+            let client_shared_chunk_group = client_shared_chunk_group.await?;
+            client_shared_chunk_group.assets.owned().await?
+        } else {
+            vec![]
+        };
 
         for &assets in client_references_chunks_ref
             .layout_segment_client_chunks
@@ -1796,6 +1826,7 @@ impl AppEndpoint {
                     app_entry.rsc_entry.ident(),
                     ChunkGroup::Entry(vec![app_entry.rsc_entry]),
                     module_graph,
+                    OutputAssets::empty(),
                     chunk_group1.await?.availability_info,
                 );
 

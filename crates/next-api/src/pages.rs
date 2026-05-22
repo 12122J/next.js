@@ -787,6 +787,7 @@ impl PageEndpoint {
                 AssetIdent::from_path(this.page.await?.base_path.clone()).into_vc(),
                 ChunkGroup::Entry(evaluatable_assets),
                 module_graph,
+                OutputAssets::empty(),
                 AvailabilityInfo::root(),
             );
 
@@ -1025,6 +1026,7 @@ impl PageEndpoint {
                     ssr_module.ident(),
                     ChunkGroup::Entry(vec![ssr_module]),
                     ssr_module_graph,
+                    OutputAssets::empty(),
                     current_chunk_group.await?.availability_info,
                 );
 

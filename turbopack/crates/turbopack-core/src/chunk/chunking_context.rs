@@ -440,12 +440,21 @@ pub trait ChunkingContext {
         availability_info: AvailabilityInfo,
     ) -> Vc<ChunkGroupResult>;
 
+    /// Like [`Self::chunk_group`], but additionally produces an evaluate chunk
+    /// (and, in dev, a chunk-list register chunk) that bootstraps and runs
+    /// `chunk_group`'s entries.
+    ///
+    /// `extra_chunks` are not part of this chunk group's module graph, but they
+    /// are loaded alongside the entries (and tracked in the chunk-list register
+    /// chunk for HMR) — used to extend the entry's HMR-tracked chunks with
+    /// chunks computed elsewhere (e.g. app-router client references).
     #[turbo_tasks::function]
     fn evaluated_chunk_group(
         self: Vc<Self>,
         ident: Vc<AssetIdent>,
         chunk_group: ChunkGroup,
         module_graph: Vc<ModuleGraph>,
+        extra_chunks: Vc<OutputAssets>,
         availability_info: AvailabilityInfo,
     ) -> Vc<ChunkGroupResult>;
 
@@ -518,6 +527,7 @@ pub trait ChunkingContextExt {
         ident: Vc<AssetIdent>,
         chunk_group: ChunkGroup,
         module_graph: Vc<ModuleGraph>,
+        extra_chunks: Vc<OutputAssets>,
         availability_info: AvailabilityInfo,
     ) -> Vc<OutputAssetsWithReferenced>
     where
@@ -604,6 +614,7 @@ impl<T: ChunkingContext + Send + Upcast<Box<dyn ChunkingContext>>> ChunkingConte
         ident: Vc<AssetIdent>,
         chunk_group: ChunkGroup,
         module_graph: Vc<ModuleGraph>,
+        extra_chunks: Vc<OutputAssets>,
         availability_info: AvailabilityInfo,
     ) -> Vc<OutputAssetsWithReferenced> {
         evaluated_chunk_group_assets(
@@ -611,6 +622,7 @@ impl<T: ChunkingContext + Send + Upcast<Box<dyn ChunkingContext>>> ChunkingConte
             ident,
             chunk_group,
             module_graph,
+            extra_chunks,
             availability_info,
         )
     }
@@ -752,10 +764,17 @@ fn evaluated_chunk_group_assets(
     ident: Vc<AssetIdent>,
     chunk_group: ChunkGroup,
     module_graph: Vc<ModuleGraph>,
+    extra_chunks: Vc<OutputAssets>,
     availability_info: AvailabilityInfo,
 ) -> Vc<OutputAssetsWithReferenced> {
     chunking_context
-        .evaluated_chunk_group(ident, chunk_group, module_graph, availability_info)
+        .evaluated_chunk_group(
+            ident,
+            chunk_group,
+            module_graph,
+            extra_chunks,
+            availability_info,
+        )
         .output_assets_with_referenced()
 }
 
