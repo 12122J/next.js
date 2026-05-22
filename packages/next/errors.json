@@ -1282,5 +1282,6 @@
   "1281": "expectFastSetImmediate cannot be called in the edge runtime",
   "1282": "%s expects to run with fast-set-immediate enabled.",
   "1283": "Expected a render with shells to start with a shell stage, got %s",
-  "1284": "Expected a render without shells to start with a non-shell stage, got %s"
+  "1284": "Expected a render without shells to start with a non-shell stage, got %s",
+  "1285": "Attempted to advance to stage %s but the render is limited to %s"
 }

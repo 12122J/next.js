@@ -142,13 +142,13 @@ describe('Cache Components HTTP Access Fallback Prerender', () => {
                    at useDynamicSearchParams (webpack:///<next-src>)
                    at useSearchParams (webpack:///<next-src>)
                    at NotFound (webpack:///app/not-found/[slug]/not-found.tsx:6:39)
-                 707 |         return
-                 708 |       }
-               > 709 |       throw new BailoutToCSRError(expression)
+                 704 |         return
+                 705 |       }
+               > 706 |       throw new BailoutToCSRError(expression)
                      |             ^
-                 710 |     }
-                 711 |     case 'prerender':
-                 712 |     case 'prerender-runtime': {
+                 707 |     }
+                 708 |     case 'prerender':
+                 709 |     case 'prerender-runtime': {
                  reason: 'useSearchParams()',
                  digest: 'BAILOUT_TO_CLIENT_SIDE_RENDERING'
                }
@@ -245,13 +245,13 @@ describe('Cache Components HTTP Access Fallback Prerender', () => {
                    at useDynamicSearchParams (webpack:///<next-src>)
                    at useSearchParams (webpack:///<next-src>)
                    at Forbidden (webpack:///app/forbidden/[slug]/forbidden.tsx:6:39)
-                 707 |         return
-                 708 |       }
-               > 709 |       throw new BailoutToCSRError(expression)
+                 704 |         return
+                 705 |       }
+               > 706 |       throw new BailoutToCSRError(expression)
                      |             ^
-                 710 |     }
-                 711 |     case 'prerender':
-                 712 |     case 'prerender-runtime': {
+                 707 |     }
+                 708 |     case 'prerender':
+                 709 |     case 'prerender-runtime': {
                  reason: 'useSearchParams()',
                  digest: 'BAILOUT_TO_CLIENT_SIDE_RENDERING'
                }
@@ -348,13 +348,13 @@ describe('Cache Components HTTP Access Fallback Prerender', () => {
                    at useDynamicSearchParams (webpack:///<next-src>)
                    at useSearchParams (webpack:///<next-src>)
                    at Unauthorized (webpack:///app/unauthorized/[slug]/unauthorized.tsx:6:39)
-                 707 |         return
-                 708 |       }
-               > 709 |       throw new BailoutToCSRError(expression)
+                 704 |         return
+                 705 |       }
+               > 706 |       throw new BailoutToCSRError(expression)
                      |             ^
-                 710 |     }
-                 711 |     case 'prerender':
-                 712 |     case 'prerender-runtime': {
+                 707 |     }
+                 708 |     case 'prerender':
+                 709 |     case 'prerender-runtime': {
                  reason: 'useSearchParams()',
                  digest: 'BAILOUT_TO_CLIENT_SIDE_RENDERING'
                }
