@@ -193,8 +193,8 @@ import {
   type OpaqueFallbackRouteParams,
 } from '../request/fallback-params'
 import {
+  ReactServerPrerenderResult,
   createReactServerPrerenderResult,
-  type ReactServerPrerenderResult,
   ReactServerResult,
   ReplayableNodeStream,
   createReactServerPrerenderResultFromRender,
@@ -1986,7 +1986,7 @@ async function finalRuntimeServerPrerender(
     getPayload
   )
 
-  let getPrerenderIsPending: () => boolean
+  let collectedChunks: ReturnType<typeof collectPrerenderChunksWeb>
 
   const result = await runInSequentialTasks(
     async () => {
@@ -1994,10 +1994,9 @@ async function finalRuntimeServerPrerender(
       // Runtime-prefetchable segments render immediately.
       // Non-prefetchable segments are gated until the Static stage.
       finalStageController.advanceStage(RenderStage.EarlyStatic)
-      const prerenderResult = workUnitAsyncStorage.run(
+      const stream = workUnitAsyncStorage.run(
         finalServerPrerenderStore,
-        streamingServerPrerenderWeb,
-        ComponentMod,
+        ComponentMod.renderToReadableStream,
         finalRSCPayload,
         clientModules,
         {
@@ -2006,8 +2005,16 @@ async function finalRuntimeServerPrerender(
           signal: finalServerController.signal,
         }
       )
-      getPrerenderIsPending = prerenderResult.isPending
-      return prerenderResult
+      collectedChunks = collectPrerenderChunksWeb(
+        stream,
+        finalServerController.signal
+      )
+      await collectedChunks.streamFinishedPromise
+      return {
+        prelude: new ReactServerPrerenderResult(
+          collectedChunks.prerenderChunks
+        ).consumeAsStream(),
+      }
     },
     () => {
       // Advance to Static stage: resolve promise holding back
@@ -2041,7 +2048,7 @@ async function finalRuntimeServerPrerender(
         return
       }
 
-      if (getPrerenderIsPending()) {
+      if (collectedChunks.isPending()) {
         // If the prerender is still pending then it must depend on dynamic data.
         serverIsDynamic = true
       }
@@ -2062,106 +2069,6 @@ async function finalRuntimeServerPrerender(
     collectedStale: staleTimeIterable.currentValue,
     collectedTags: finalServerPrerenderStore.tags,
   }
-}
-
-type ServerPrerenderParams = Parameters<
-  (typeof import('react-server-dom-webpack/static'))['prerender']
->
-function streamingServerPrerenderWeb(
-  componentMod: RenderOpts['ComponentMod'],
-  model: ServerPrerenderParams[0],
-  clientModules: ServerPrerenderParams[1],
-  options: Omit<NonNullable<ServerPrerenderParams[2]>, 'signal'> &
-    Required<Pick<NonNullable<ServerPrerenderParams[2]>, 'signal'>>
-) {
-  // React Prerenders and renders schedule work with different timings.
-  // Prerenders use `queueMicrotask`, but renders use `setImmediate`,
-  // so if we want to perform a staged prerender using a render function,
-  // fast-set-immediate is required for correctness.
-  const { expectFastSetImmediate } =
-    require('../node-environment-extensions/fast-set-immediate.external') as typeof import('../node-environment-extensions/fast-set-immediate.external')
-  expectFastSetImmediate('progressiveServerPrerenderWeb')
-
-  const { signal } = options
-
-  // When we abort the render, we want to finish the stream before react errors unfinished chunks.
-  let onBeforeReactAbort: ((reason: unknown) => void) | undefined
-  signal.addEventListener(
-    'abort',
-    () => {
-      onBeforeReactAbort?.(signal.reason)
-    },
-    { once: true }
-  )
-
-  const fullStream = componentMod.renderToReadableStream(
-    model,
-    clientModules,
-    options
-  )
-
-  // If the signal is already aborted, we won't render anything anyway.
-  if (signal.aborted) {
-    return { isPending: () => false, prelude: fullStream }
-  }
-
-  const fullStreamReader = fullStream.getReader()
-
-  let isPending = true
-  const resultStream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      onBeforeReactAbort = (reason: unknown) => {
-        // if the stream already finished, do nothing.
-        if (!isPending) {
-          return
-        }
-        isPending = false
-        controller.close()
-        void fullStreamReader.cancel(reason)
-      }
-    },
-    async pull(controller) {
-      // `pull()` won't be called again until the first call resolves,
-      // so in effect it'll only be called once.
-      // we use a loop (instead of relying on `pull` being called repeatedly)
-      // so that we can get the chunks as soon as they're available.
-      // otherwise, the timing ends up being incorrect.
-      while (true) {
-        try {
-          const it = await fullStreamReader.read()
-
-          // If we've already aborted the render, do nothing.
-          // `onBeforeReactAbort` should've handled cleanup already.
-          // NOTE: cancelling the reader still seems to emit a `{done: true}` chunk.
-          // also, despite having cancelled the reader, we may still get error chunks from react,
-          // which we specifically want to ignore.
-          if (signal.aborted) {
-            return
-          }
-
-          // If we've finished the stream without aborting, then the prerender was completed.
-          if (it.done) {
-            isPending = false
-            controller.close()
-            return
-          }
-
-          controller.enqueue(it.value)
-        } catch (err) {
-          // Ignore errors that happen after aborting.
-          if (!signal.aborted) {
-            isPending = false
-            controller.error(err)
-          }
-        }
-      }
-    },
-    cancel(reason) {
-      isPending = false
-      return fullStreamReader.cancel(reason)
-    },
-  })
-  return { isPending: () => isPending, prelude: resultStream }
 }
 
 /**
@@ -7801,7 +7708,7 @@ async function prerenderToStream(
         varyParamsAccumulator,
       }
 
-      const finalAttemptRSCPayload = await workUnitAsyncStorage.run(
+      const finalServerPayload = await workUnitAsyncStorage.run(
         finalServerPayloadPrerenderStore,
         getRSCPayload,
         tree,
@@ -7812,7 +7719,7 @@ async function prerenderToStream(
       let staleTimeIterable: StaleTimeIterable | undefined
       if (cachedNavigations) {
         staleTimeIterable = new StaleTimeIterable()
-        finalAttemptRSCPayload.s = staleTimeIterable
+        finalServerPayload.s = staleTimeIterable
       }
 
       const serverDynamicTracking = createDynamicTrackingState(
@@ -7850,15 +7757,14 @@ async function prerenderToStream(
         )
       }
 
-      let getPrerenderIsPending: () => boolean
+      let collectedChunks: ReturnType<typeof collectPrerenderChunksWeb>
 
-      const finalServerPrerenderStreamPromise = runInSequentialTasks(
-        () => {
-          const prerenderResult = workUnitAsyncStorage.run(
+      await runInSequentialTasks(
+        async () => {
+          const stream = workUnitAsyncStorage.run(
             finalServerPrerenderStore,
-            streamingServerPrerenderWeb,
-            ComponentMod,
-            finalAttemptRSCPayload,
+            ComponentMod.renderToReadableStream,
+            finalServerPayload,
             clientModules,
             {
               filterStackFrame,
@@ -7868,8 +7774,6 @@ async function prerenderToStream(
               signal: finalServerReactController.signal,
             }
           )
-
-          getPrerenderIsPending = prerenderResult.isPending
 
           // The listener to abort our own render controller must be added
           // after React has added its listener, to ensure that pending I/O
@@ -7882,7 +7786,11 @@ async function prerenderToStream(
             { once: true }
           )
 
-          return prerenderResult.prelude
+          collectedChunks = collectPrerenderChunksWeb(
+            stream,
+            finalServerReactController.signal
+          )
+          return collectedChunks.streamFinishedPromise
         },
         async () => {
           // Now that the prerendering is complete, we know the final stale
@@ -7907,7 +7815,7 @@ async function prerenderToStream(
             return
           }
 
-          if (getPrerenderIsPending()) {
+          if (collectedChunks.isPending()) {
             // If prerenderIsPending then we have blocked for longer than a Task and we assume
             // there is something unfinished.
             serverIsDynamic = true
@@ -7918,9 +7826,7 @@ async function prerenderToStream(
       )
 
       const reactServerResult = (reactServerPrerenderResult =
-        await createReactServerPrerenderResultFromRender(
-          await finalServerPrerenderStreamPromise
-        ))
+        new ReactServerPrerenderResult(collectedChunks!.prerenderChunks))
 
       const clientDynamicTracking = createDynamicTrackingState(
         isDebugDynamicAccesses
@@ -7959,12 +7865,22 @@ async function prerenderToStream(
       let { prelude: unprocessedPrelude, postponed } =
         await runInSequentialTasks(
           () => {
+            const stream =
+              process.env.NODE_ENV === 'development' &&
+              collectedChunks!.prerenderChunksWithDebugInfo
+                ? createNodeStreamWithLateRelease(
+                    collectedChunks!.prerenderChunks,
+                    collectedChunks!.prerenderChunksWithDebugInfo,
+                    finalClientReactController.signal
+                  )
+                : reactServerResult.asUnclosingStream()
+
             const pendingFinalClientResult = workUnitAsyncStorage.run(
               finalClientPrerenderStore,
               getClientPrerender,
               // eslint-disable-next-line @next/internal/no-ambiguous-jsx
               <App
-                reactServerStream={reactServerResult.asUnclosingStream()}
+                reactServerStream={stream}
                 reactDebugStream={undefined}
                 debugEndTime={undefined}
                 preinitScripts={preinitScripts}
@@ -8792,6 +8708,54 @@ async function prerenderToStream(
       }
       throw finalErr
     }
+  }
+}
+
+function collectPrerenderChunksWeb(
+  stream: ReadableStream<Uint8Array>,
+  signal: AbortSignal
+) {
+  let isPending = true
+  const prerenderChunks: Uint8Array[] = []
+  let prerenderChunksWithDebugInfo: Uint8Array[] | null = null
+  // In development, we collect chunks emitted after aborting for debug info.
+  if (process.env.NODE_ENV === 'development') {
+    prerenderChunksWithDebugInfo = []
+  }
+
+  const streamFinishedPromise = (async () => {
+    const reader = stream.getReader()
+
+    // In production, there's no point to wait for extra chunks after aborting.
+    if (process.env.NODE_ENV !== 'development') {
+      signal.addEventListener(
+        'abort',
+        () => {
+          reader.cancel(signal.reason)
+        },
+        { once: true }
+      )
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        isPending = false
+        break
+      }
+
+      if (!signal.aborted) {
+        prerenderChunks.push(value)
+      }
+      prerenderChunksWithDebugInfo?.push(value)
+    }
+  })()
+
+  return {
+    isPending: () => isPending,
+    prerenderChunks,
+    prerenderChunksWithDebugInfo,
+    streamFinishedPromise,
   }
 }
 
