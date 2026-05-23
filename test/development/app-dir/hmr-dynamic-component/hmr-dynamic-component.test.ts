@@ -27,13 +27,10 @@ describe('hmr-dynamic-component', () => {
 
       await next.patchFile(componentPath, editedContent)
 
-      await retry(
-        async () => {
-          const div = await browser.elementByCss('#dynamic-component')
-          expect(await div.text()).toContain('Dynamic Component UPDATED')
-        },
-        10000
-      )
+      await retry(async () => {
+        const div = await browser.elementByCss('#dynamic-component')
+        expect(await div.text()).toContain('Dynamic Component UPDATED')
+      }, 10000)
 
       // Ensure the page was updated via HMR and not a full reload
       expect(await browser.eval('performance.timeOrigin')).toEqual(timeOrigin)
