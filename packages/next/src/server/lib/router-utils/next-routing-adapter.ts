@@ -16,6 +16,7 @@ import {
   allowedStatusCodes,
   getRedirectStatus,
 } from '../../../lib/redirect-status'
+import { isDynamicRoute } from '../../../shared/lib/router/utils/is-dynamic'
 import { parseUrl } from '../../../shared/lib/router/utils/parse-url'
 
 type FsChecker = Awaited<ReturnType<typeof setupFsCheck>>
@@ -46,7 +47,7 @@ export type NextRoutingRouteConfig = {
 export type NextRoutingServerState = {
   buildId: string
   basePath: string
-  i18n?: NextConfigRuntime['i18n']
+  i18n?: NonNullable<NextConfigRuntime['i18n']>
   pathnames: string[]
   routes: NextRoutingRouteConfig
 }
@@ -183,9 +184,11 @@ export function createNextRoutingPathnames(
   >,
   {
     additionalPathnames = [],
+    includeDynamicRoutes = true,
     invokedOutputs,
   }: {
     additionalPathnames?: Iterable<string>
+    includeDynamicRoutes?: boolean
     invokedOutputs?: Set<string>
   } = {}
 ): string[] {
@@ -195,9 +198,15 @@ export function createNextRoutingPathnames(
     ...fsChecker.appFiles,
     ...fsChecker.pageFiles,
     ...fsChecker.nextDataRoutes,
-    ...fsChecker.getDynamicRoutes().map((route) => route.page),
+    ...(includeDynamicRoutes
+      ? fsChecker.getDynamicRoutes().map((route) => route.page)
+      : []),
     ...additionalPathnames,
   ]) {
+    if (!includeDynamicRoutes && isDynamicRoute(pathname, false)) {
+      continue
+    }
+
     if (!invokedOutputs?.has(pathname)) {
       pathnames.add(pathname)
     }
@@ -211,12 +220,14 @@ export function createNextRoutingServerState(
   config: NextConfigRuntime,
   {
     additionalPathnames,
+    includeDynamicRoutes = true,
     invokedOutputs,
     minimalMode = false,
     middlewareMatchers = [],
     shouldNormalizeNextData = middlewareMatchers.length > 0,
   }: {
     additionalPathnames?: Iterable<string>
+    includeDynamicRoutes?: boolean
     invokedOutputs?: Set<string>
     minimalMode?: boolean
     middlewareMatchers?: NextRoutingRoute[]
@@ -226,9 +237,10 @@ export function createNextRoutingServerState(
   return {
     buildId: fsChecker.buildId,
     basePath: config.basePath || '',
-    i18n: config.i18n,
+    i18n: config.i18n || undefined,
     pathnames: createNextRoutingPathnames(fsChecker, {
       additionalPathnames,
+      includeDynamicRoutes,
       invokedOutputs,
     }),
     routes: {
@@ -246,9 +258,9 @@ export function createNextRoutingServerState(
       afterFiles: minimalMode
         ? []
         : fsChecker.rewrites.afterFiles.map(createNextRoutingRewriteRoute),
-      dynamicRoutes: fsChecker
-        .getDynamicRoutes()
-        .map(createNextRoutingDynamicRoute),
+      dynamicRoutes: includeDynamicRoutes
+        ? fsChecker.getDynamicRoutes().map(createNextRoutingDynamicRoute)
+        : [],
       onMatch: fsChecker.onMatchHeaders.map(createNextRoutingHeaderRoute),
       fallback: minimalMode
         ? []

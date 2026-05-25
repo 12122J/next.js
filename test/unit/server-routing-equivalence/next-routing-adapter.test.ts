@@ -255,6 +255,29 @@ describe('next routing server adapter', () => {
     ])
   })
 
+  it('can omit dynamic route inputs for live server opt-in delegation', () => {
+    const fsChecker = createFsChecker({
+      appFiles: ['/app', '/app/[slug]'],
+      pageFiles: ['/page', '/blog/[slug]'],
+      nextDataRoutes: [
+        '/_next/data/BUILD_ID/page.json',
+        '/_next/data/BUILD_ID/blog/[slug].json',
+      ],
+      dynamicRoutes: [createDynamicRoute('/blog/[slug]')],
+    })
+
+    const state = createNextRoutingServerState(fsChecker, createConfig(), {
+      includeDynamicRoutes: false,
+    })
+
+    expect(state.pathnames).toEqual([
+      '/app',
+      '/page',
+      '/_next/data/BUILD_ID/page.json',
+    ])
+    expect(state.routes.dynamicRoutes).toEqual([])
+  })
+
   it('keeps custom routes out of minimal mode routing input', () => {
     const fsChecker = createFsChecker({
       headers: [
