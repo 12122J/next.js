@@ -128,11 +128,7 @@ describe('App Shell prefetching', () => {
     }, [{ includes: 'Post 2' }])
   })
 
-  // TODO: Un-skip once the server-side rewindable-prerender support lands
-  // (the WIP commit above this one). Until then, the server doesn't emit a
-  // shell byte offset for fully-static prerenders, so the client can't
-  // extract a shell prefix and this test would time out waiting for it.
-  it.skip('extracts the App Shell from a fully-static prerender response', async () => {
+  it('extracts the App Shell from a fully-static prerender response', async () => {
     // The /static-posts/[id] route is fully static: all params are known via
     // `generateStaticParams` and the page accesses no other dynamic data, so
     // each URL is prerendered at build time. When the client prefetches one

@@ -1278,5 +1278,11 @@
   "1277": "no route matched for path \"%s\"",
   "1278": "compileRoute: either routeSpecifier or path is required",
   "1279": "\\`experimental.appShells\\` requires the following to also be enabled: %s. Please update your %s accordingly.",
-  "1280": "Invariant: expected static metadata route to have a prerender pathname (%s)"
+  "1280": "Invariant: expected static metadata route to have a prerender pathname (%s)",
+  "1281": "A render that hasn't started yet cannot be abandoned",
+  "1282": "expectFastSetImmediate cannot be called in the edge runtime",
+  "1283": "%s expects to run with fast-set-immediate enabled.",
+  "1284": "Expected a render with shells to start with a shell stage, got %s",
+  "1285": "Expected a render without shells to start with a non-shell stage, got %s",
+  "1286": "Attempted to advance to stage %s but the render is limited to %s"
 }
